@@ -20,21 +20,23 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
-
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	"github.com/jcpowermac/vsphere-capacity-manager-vcenter-ctrl/internal/controller"
+	"github.com/openshift-splat-team/vsphere-capacity-manager-vcenter-ctrl/internal/controller"
+	"github.com/openshift-splat-team/vsphere-capacity-manager-vcenter-ctrl/pkg/utils"
 	//+kubebuilder:scaffold:imports
 
 	v1 "github.com/openshift-splat-team/vsphere-capacity-manager/pkg/apis/vspherecapacitymanager.splat.io/v1"
@@ -55,6 +57,12 @@ func init() {
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
+
+	var secretNamespace string
+	var secretDatakeys string
+	var secretNames string
+	var secretVCenters string
+
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
@@ -67,6 +75,14 @@ func main() {
 		"If set the metrics endpoint is served securely")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+
+	flag.StringVar(&secretNamespace, "secret-namespace", "", "Namespace that the controller uses for vSphere vCenter secrets")
+	flag.StringVar(&secretNames, "secrets", "", "Comma delimited list of secret names that contains vSphere vCenter secrets")
+	flag.StringVar(&secretDatakeys, "secret-data-keys", "", "Comma delimited list of secret names that contains vSphere vCenter secrets")
+
+	// todo: jcallen: I absolutely do not like this but for speed ignoring my ocd
+	flag.StringVar(&secretVCenters, "secret-vcenters", "", "Comma delimited list of secret vcenter names")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -104,8 +120,11 @@ func main() {
 		},
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "ceef4f9e.my.domain",
+
+		// TODO: jcallen: disable leader election in the args of the deployment
+		// TODO: confirm this is the right answer
+		LeaderElection:   enableLeaderElection,
+		LeaderElectionID: "ceef4f9e.my.domain",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -123,9 +142,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	nonCachedClient, err := client.New(config.GetConfigOrDie(), client.Options{})
+	if err != nil {
+		setupLog.Error(err, "unable to create non cached client")
+		os.Exit(1)
+	}
+
+	metadata, err := utils.GetVSphereMetadataBySecretString(secretNamespace, secretNames, secretDatakeys, secretVCenters, nonCachedClient)
+	if err != nil {
+		setupLog.Error(err, "unable to get vSphere metadata")
+		os.Exit(1)
+	}
+
 	if err = (&controller.LeaseReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Metadata: metadata,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lease")
 		os.Exit(1)
