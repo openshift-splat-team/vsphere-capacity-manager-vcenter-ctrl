@@ -101,13 +101,15 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	if _, ok := leases[lease.Name]; !ok {
-		leaseMu.Lock()
-		leases[req.Name] = lease
-		leaseMu.Unlock()
-		logger.Info(fmt.Sprintf("cached lease was created at %s", lease.CreationTimestamp.String()))
+		if lease.Status.Phase == v1.PHASE_FULFILLED {
+			leaseMu.Lock()
+			leases[req.Name] = lease
+			leaseMu.Unlock()
+			logger.Info(fmt.Sprintf("cached lease was created at %s", lease.CreationTimestamp.String()))
 
-		if err := checkLeasedNetworkForLeakedVirtualMachines(ctx, lease, r.Metadata, false, logger); err != nil {
-			return ctrl.Result{}, err
+			if err := checkLeasedNetworkForLeakedVirtualMachines(ctx, lease, r.Metadata, false, logger); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 	return ctrl.Result{}, nil
@@ -115,7 +117,7 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.Lease, metadata *vsphere.Metadata, leaseDeleted bool, logger logr.Logger) error {
 	for _, network := range lease.Status.Topology.Networks {
-		logger.Info(fmt.Sprintf("Found lease %s with network %s", lease.Name, network))
+		logger.Info(fmt.Sprintf("checking leased network %s", network))
 		for server, _ := range metadata.VCenterCredentials {
 			s, err := metadata.Session(ctx, server)
 			if err != nil {
@@ -162,7 +164,6 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 										if err := deleteVirtualMachine(ctx, s, vm.Reference()); err != nil {
 											return err
 										}
-
 									}
 								}
 							}
@@ -207,7 +208,7 @@ func (r *LeaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).For(&v1.Lease{}).WithEventFilter(predicate.Funcs{
 		CreateFunc:  func(createEvent event.CreateEvent) bool { return true },
 		DeleteFunc:  func(deleteEvent event.DeleteEvent) bool { return true },
-		UpdateFunc:  func(updateEvent event.UpdateEvent) bool { return false },
+		UpdateFunc:  func(updateEvent event.UpdateEvent) bool { return true },
 		GenericFunc: func(genericEvent event.GenericEvent) bool { return false },
 	}).Complete(r)
 }
