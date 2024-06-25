@@ -122,7 +122,7 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 				return err
 			}
 
-			datacenters, err := s.Finder.DatacenterList(ctx, "/...")
+			datacenters, err := s.Finder.DatacenterList(ctx, "*")
 			if err != nil {
 				return err
 			}
