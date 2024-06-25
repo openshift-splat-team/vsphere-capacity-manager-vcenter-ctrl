@@ -88,12 +88,9 @@ func (m *Metadata) unlockedSession(ctx context.Context, server string) (*session
 
 	// if nil we haven't created a session
 	if _, ok := m.sessions[server]; ok {
-		// is the session still valid? if not re-run GetOrCreate.
-		if !m.sessions[server].Valid() {
-			m.sessions[server], err = session.GetOrCreate(ctx, params)
-			if err != nil {
-				return nil, err
-			}
+		m.sessions[server], err = session.GetOrCreate(ctx, params)
+		if err != nil {
+			return nil, err
 		}
 		return m.sessions[server], nil
 	}
