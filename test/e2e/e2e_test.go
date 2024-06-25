@@ -24,7 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/jcpowermac/vsphere-capacity-manager-vcenter-ctrl/test/utils"
+	"github.com/openshift-splat-team/vsphere-capacity-manager-vcenter-ctrl/test/utils"
 )
 
 const namespace = "vsphere-capacity-manager-vcenter-ctrl-system"
