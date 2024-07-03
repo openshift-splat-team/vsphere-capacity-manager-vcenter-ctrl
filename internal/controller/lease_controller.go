@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -148,7 +149,7 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 					if len(dvpg.Vm) > 0 {
 						virtualMachinesMo := make([]mo.VirtualMachine, 0, len(dvpg.Vm))
 
-						if err := s.PropertyCollector().Retrieve(ctx, dvpg.Vm, []string{"name", "summary", "config"}, &virtualMachinesMo); err != nil {
+						if err := s.PropertyCollector().Retrieve(ctx, dvpg.Vm, []string{"name", "parent", "summary", "config"}, &virtualMachinesMo); err != nil {
 							return err
 						}
 
@@ -156,13 +157,30 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 						for _, vm := range virtualMachinesMo {
 							if vm.Config != nil {
 								if vm.Config.CreateDate != nil {
-
 									// if the lease was created _after_ the virtual machines then they probably shouldn't be there right?
 									if leaseDeleted || lease.CreationTimestamp.Time.After(*vm.Config.CreateDate) {
-										logger.Info(fmt.Sprintf("destroying virtual machine %s uptime %d created %s", vm.Name, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String()))
+										if lease.Spec.NetworkType == v1.NetworkTypeSingleTenant || lease.Spec.NetworkType == "" {
+											logger.Info(fmt.Sprintf("destroying virtual machine %s uptime %d created %s", vm.Name, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String()))
 
-										if err := deleteVirtualMachine(ctx, s, vm.Reference()); err != nil {
-											return err
+											if err := deleteVirtualMachine(ctx, s, vm.Reference()); err != nil {
+												return err
+											}
+										} else {
+											if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok {
+
+												folderCommon := object.NewCommon(s.Client.Client, *vm.Parent)
+												folderName, err := folderCommon.ObjectName(ctx)
+												if err != nil {
+													return err
+												}
+
+												if strings.Contains(vm.Name, clusterId) || strings.Contains(folderName, clusterId) {
+													logger.Info(fmt.Sprintf("destroying virtual machine %s with cluster name %s uptime %d created %s", vm.Name, clusterId, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String()))
+													if err := deleteVirtualMachine(ctx, s, vm.Reference()); err != nil {
+														return err
+													}
+												}
+											}
 										}
 									}
 								}
