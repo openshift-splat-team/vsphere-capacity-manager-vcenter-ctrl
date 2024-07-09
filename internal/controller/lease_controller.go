@@ -75,6 +75,8 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			return ctrl.Result{}, err
 		}
 
+		logger.Info(fmt.Sprintf("lease %s not found, assuming it was deleted", req.Name))
+
 		// If lease was not found it was deleted, start clean up process
 		// make a copy of the lease, lock, delete the lease from cache, unlock, delete virtual machines if they exist
 		if lease, ok := leases[req.Name]; ok {
@@ -130,6 +132,8 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 				return err
 			}
 
+			logger.Info(fmt.Sprintf("\tchecking datacenters %s", datacenters))
+
 			for _, dc := range datacenters {
 				s.Finder.SetDatacenter(dc)
 				networkBasename := path.Base(network)
@@ -142,10 +146,13 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 				for _, networkRef := range networkList {
 					var dvpg mo.DistributedVirtualPortgroup
 
-					if err := s.PropertyCollector().RetrieveOne(ctx, networkRef.Reference(), []string{"vm"}, &dvpg); err != nil {
+					if err := s.PropertyCollector().RetrieveOne(ctx, networkRef.Reference(), []string{"vm", "name", "key"}, &dvpg); err != nil {
 						return err
 					}
+					logger.Info(fmt.Sprintf("\t\tnetwork %s key %s vm count %d", dvpg.Name, dvpg.Key, len(dvpg.Vm)))
+
 					// No virtual machines no problems...
+
 					if len(dvpg.Vm) > 0 {
 						virtualMachinesMo := make([]mo.VirtualMachine, 0, len(dvpg.Vm))
 
@@ -160,7 +167,8 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 									// if the lease was created _after_ the virtual machines then they probably shouldn't be there right?
 									if leaseDeleted || lease.CreationTimestamp.Time.After(*vm.Config.CreateDate) {
 										if lease.Spec.NetworkType == v1.NetworkTypeSingleTenant || lease.Spec.NetworkType == "" {
-											logger.Info(fmt.Sprintf("destroying virtual machine %s uptime %d created %s", vm.Name, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String()))
+											logger.Info(fmt.Sprintf("\t\t\tdestroying vm %s uptime %d created %s lease %s created %s",
+												vm.Name, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String(), lease.Name, lease.CreationTimestamp.String()))
 
 											if err := deleteVirtualMachine(ctx, s, vm.Reference()); err != nil {
 												return err
@@ -175,7 +183,8 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 												}
 
 												if strings.Contains(vm.Name, clusterId) || strings.Contains(folderName, clusterId) {
-													logger.Info(fmt.Sprintf("destroying virtual machine %s with cluster name %s uptime %d created %s", vm.Name, clusterId, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String()))
+													logger.Info(fmt.Sprintf("\t\t\tdestroying vm %s with cluster name %s uptime %d created %s lease %s created %s",
+														vm.Name, clusterId, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String(), lease.Name, lease.CreationTimestamp.String()))
 													if err := deleteVirtualMachine(ctx, s, vm.Reference()); err != nil {
 														return err
 													}
