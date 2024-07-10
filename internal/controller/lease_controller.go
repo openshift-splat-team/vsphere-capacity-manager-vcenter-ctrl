@@ -122,6 +122,7 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 	for _, network := range lease.Status.Topology.Networks {
 		logger.Info(fmt.Sprintf("checking leased network %s", network))
 		for server, _ := range metadata.VCenterCredentials {
+			logger.Info(fmt.Sprintf("\tchecking vcenter %s", server))
 			s, err := metadata.Session(ctx, server)
 			if err != nil {
 				return err
