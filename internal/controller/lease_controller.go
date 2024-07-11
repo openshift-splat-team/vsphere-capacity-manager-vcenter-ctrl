@@ -163,7 +163,8 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 						// there should be no virtual machines left on a ci-vlan- port group
 						for _, vm := range virtualMachinesMo {
 							if vm.Config != nil {
-								if vm.Config.CreateDate != nil {
+								// don't delete templates
+								if vm.Config.CreateDate != nil && !vm.Config.Template {
 									// if the lease was created _after_ the virtual machines then they probably shouldn't be there right?
 									if leaseDeleted || lease.CreationTimestamp.Time.After(*vm.Config.CreateDate) {
 										if lease.Spec.NetworkType == v1.NetworkTypeSingleTenant || lease.Spec.NetworkType == "" {
