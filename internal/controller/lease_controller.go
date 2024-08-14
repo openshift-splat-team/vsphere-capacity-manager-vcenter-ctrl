@@ -143,6 +143,7 @@ func checkLeaseForLeakedTags(ctx context.Context, lease *v1.Lease, metadata *vsp
 		if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok && leaseDeleted {
 			for _, c := range categories {
 				if strings.Contains(c.Name, clusterId) {
+					logger.Info(fmt.Sprintf("\tdeleting tag category %s", c.Name))
 					if err = s.TagManager.DeleteCategory(ctx, &c); err != nil {
 						return err
 					}
@@ -165,6 +166,7 @@ func checkLeaseForLeakedFolders(ctx context.Context, lease *v1.Lease, metadata *
 		if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok && leaseDeleted {
 			for _, f := range folders {
 				if strings.Contains(f.Name(), clusterId) {
+					logger.Info(fmt.Sprintf("\tdeleting folder %s", f.Name()))
 					var task *object.Task
 					if task, err = f.Destroy(ctx); err != nil {
 						return err
