@@ -90,6 +90,15 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			if err := checkLeasedNetworkForLeakedVirtualMachines(ctx, leaseCopy, r.Metadata, true, logger); err != nil {
 				return ctrl.Result{}, err
 			}
+
+			if err := checkLeaseForLeakedFolders(ctx, leaseCopy, r.Metadata, true, logger); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			if err := checkLeaseForLeakedTags(ctx, leaseCopy, r.Metadata, true, logger); err != nil {
+				return ctrl.Result{}, err
+			}
+
 			leaseCopy = nil
 
 		} else {
@@ -118,11 +127,64 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	return ctrl.Result{}, nil
 }
 
+func checkLeaseForLeakedTags(ctx context.Context, lease *v1.Lease, metadata *vsphere.Metadata, leaseDeleted bool, logger logr.Logger) error {
+	for server, _ := range metadata.VCenterCredentials {
+		logger.Info(fmt.Sprintf("\tchecking vcenter %s for leaked tags", server))
+		s, err := metadata.Session(ctx, server)
+		if err != nil {
+			return err
+		}
+
+		categories, err := s.TagManager.GetCategories(ctx)
+		if err != nil {
+			return err
+		}
+
+		if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok && leaseDeleted {
+			for _, c := range categories {
+				if strings.Contains(c.Name, clusterId) {
+					if err = s.TagManager.DeleteCategory(ctx, &c); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+func checkLeaseForLeakedFolders(ctx context.Context, lease *v1.Lease, metadata *vsphere.Metadata, leaseDeleted bool, logger logr.Logger) error {
+	for server, _ := range metadata.VCenterCredentials {
+		logger.Info(fmt.Sprintf("\tchecking vcenter %s for leaked folders", server))
+		s, err := metadata.Session(ctx, server)
+		if err != nil {
+			return err
+		}
+
+		folders, err := s.Finder.FolderList(ctx, "*")
+
+		if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok && leaseDeleted {
+			for _, f := range folders {
+				if strings.Contains(f.Name(), clusterId) {
+					var task *object.Task
+					if task, err = f.Destroy(ctx); err != nil {
+						return err
+					}
+
+					if err = task.Wait(ctx); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.Lease, metadata *vsphere.Metadata, leaseDeleted bool, logger logr.Logger) error {
 	for _, network := range lease.Status.Topology.Networks {
 		logger.Info(fmt.Sprintf("checking leased network %s", network))
 		for server, _ := range metadata.VCenterCredentials {
-			logger.Info(fmt.Sprintf("\tchecking vcenter %s", server))
+			logger.Info(fmt.Sprintf("\tchecking vcenter %s for leaked virtual machines", server))
 			s, err := metadata.Session(ctx, server)
 			if err != nil {
 				return err
