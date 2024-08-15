@@ -139,6 +139,7 @@ func checkLeaseForLeakedTags(ctx context.Context, lease *v1.Lease, metadata *vsp
 		if err != nil {
 			return err
 		}
+		logger.Info(fmt.Sprintf("\tchecking vcenter %s for leaked tag categories %d", server, len(categories)))
 
 		if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok && leaseDeleted {
 			for _, c := range categories {
@@ -155,13 +156,16 @@ func checkLeaseForLeakedTags(ctx context.Context, lease *v1.Lease, metadata *vsp
 }
 func checkLeaseForLeakedFolders(ctx context.Context, lease *v1.Lease, metadata *vsphere.Metadata, leaseDeleted bool, logger logr.Logger) error {
 	for server, _ := range metadata.VCenterCredentials {
-		logger.Info(fmt.Sprintf("\tchecking vcenter %s for leaked folders", server))
 		s, err := metadata.Session(ctx, server)
 		if err != nil {
 			return err
 		}
 
 		folders, err := s.Finder.FolderList(ctx, "*")
+		if err != nil {
+			return err
+		}
+		logger.Info(fmt.Sprintf("\tchecking vcenter %s for leaked folders %d", server, len(folders)))
 
 		if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok && leaseDeleted {
 			for _, f := range folders {
@@ -227,6 +231,12 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 
 						// there should be no virtual machines left on a ci-vlan- port group
 						for _, vm := range virtualMachinesMo {
+
+							// avoids deleting upi imported rhcos ovas so they can be re-used
+							if strings.HasPrefix(vm.Name, "rhcos-") {
+								continue
+							}
+
 							if vm.Config != nil {
 								// don't delete templates
 								if vm.Config.CreateDate != nil && !vm.Config.Template {
