@@ -69,18 +69,20 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	logger := log.FromContext(ctx)
 	lease := &v1.Lease{}
 
+	logger.WithName("leases").Info("number of leases", len(leases))
+
 	if err := r.Get(ctx, client.ObjectKey{Name: req.Name, Namespace: req.Namespace}, lease); err != nil {
 		// error is Not NotFound, return
 		if err = client.IgnoreNotFound(err); err != nil {
 			return ctrl.Result{}, err
 		}
 
-		logger.Info(fmt.Sprintf("lease %s not found, assuming it was deleted", req.Name))
+		logger.WithName("leases").Info("not found, assuming it was deleted", req.Name)
 
 		// If lease was not found it was deleted, start clean up process
 		// make a copy of the lease, lock, delete the lease from cache, unlock, delete virtual machines if they exist
 		if lease, ok := leases[req.Name]; ok {
-			logger.Info(fmt.Sprintf("cached lease %s available for leak check", lease.Name))
+			logger.WithName("leases").Info("available for leak check", lease.Name)
 			leaseCopy := lease.DeepCopy()
 
 			leaseMu.Lock()
@@ -102,34 +104,37 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			leaseCopy = nil
 
 		} else {
-			logger.Info(fmt.Sprintf("potentially did not clean up deleted lease %s", req.NamespacedName))
+			logger.WithName("leases").Info("potentially did not clean up deleted lease", req.NamespacedName)
 		}
 
 		return ctrl.Result{}, nil
 	}
 
 	if lease.DeletionTimestamp != nil {
-		logger.Info(fmt.Sprintf("lease was deleted at %s", lease.DeletionTimestamp.String()))
+		logger.WithName("leases").Info("was deleted at", lease.DeletionTimestamp.String())
 	}
 
 	if _, ok := leases[lease.Name]; !ok {
 		if lease.Status.Phase == v1.PHASE_FULFILLED {
 			leaseMu.Lock()
-			leases[req.Name] = lease
+			leases[lease.Name] = lease
+			logger.WithName("leases").Info("cached was created at", lease.Name, lease.CreationTimestamp.String())
 			leaseMu.Unlock()
-			logger.Info(fmt.Sprintf("cached lease was created at %s", lease.CreationTimestamp.String()))
 
 			if err := checkLeasedNetworkForLeakedVirtualMachines(ctx, lease, r.Metadata, false, logger); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
+	} else {
+		logger.WithName("leases").Info("is in phase", lease.Name, lease.Status.Phase)
 	}
+
 	return ctrl.Result{}, nil
 }
 
 func checkLeaseForLeakedTags(ctx context.Context, lease *v1.Lease, metadata *vsphere.Metadata, leaseDeleted bool, logger logr.Logger) error {
 	for server, _ := range metadata.VCenterCredentials {
-		logger.Info(fmt.Sprintf("\tchecking vcenter %s for leaked tags", server))
+		logger.WithName("vcenter").Info("for leaked tags", server)
 		s, err := metadata.Session(ctx, server)
 		if err != nil {
 			return err
@@ -139,12 +144,12 @@ func checkLeaseForLeakedTags(ctx context.Context, lease *v1.Lease, metadata *vsp
 		if err != nil {
 			return err
 		}
-		logger.Info(fmt.Sprintf("\tchecking vcenter %s for leaked tag categories %d", server, len(categories)))
+		logger.WithName("vcenter").Info("for leaked tags categories", server, len(categories))
 
 		if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok && leaseDeleted {
 			for _, c := range categories {
 				if strings.Contains(c.Name, clusterId) {
-					logger.Info(fmt.Sprintf("\tdeleting tag category %s", c.Name))
+					logger.WithName("vcenter").Info("deleting tag category", server, c.Name)
 					if err = s.TagManager.DeleteCategory(ctx, &c); err != nil {
 						return err
 					}
@@ -165,12 +170,13 @@ func checkLeaseForLeakedFolders(ctx context.Context, lease *v1.Lease, metadata *
 		if err != nil {
 			return err
 		}
-		logger.Info(fmt.Sprintf("\tchecking vcenter %s for leaked folders %d", server, len(folders)))
+		logger.WithName("vcenter").Info("checking for leaked folders", server, len(folders))
 
 		if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok && leaseDeleted {
 			for _, f := range folders {
 				if strings.Contains(f.Name(), clusterId) {
 					logger.Info(fmt.Sprintf("\tdeleting folder %s", f.Name()))
+					logger.WithName("vcenter").Info("deleting folders", server, f.Name())
 					var task *object.Task
 					if task, err = f.Destroy(ctx); err != nil {
 						return err
@@ -188,9 +194,9 @@ func checkLeaseForLeakedFolders(ctx context.Context, lease *v1.Lease, metadata *
 
 func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.Lease, metadata *vsphere.Metadata, leaseDeleted bool, logger logr.Logger) error {
 	for _, network := range lease.Status.Topology.Networks {
-		logger.Info(fmt.Sprintf("checking leased network %s", network))
+		logger.WithName("vcenter").Info("checking lease networks", network)
 		for server, _ := range metadata.VCenterCredentials {
-			logger.Info(fmt.Sprintf("\tchecking vcenter %s for leaked virtual machines", server))
+			logger.WithName("vcenter").Info("checking for leaked virtual machines", server)
 			s, err := metadata.Session(ctx, server)
 			if err != nil {
 				return err
@@ -201,7 +207,7 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 				return err
 			}
 
-			logger.Info(fmt.Sprintf("\tchecking datacenters %s", datacenters))
+			logger.WithName("vcenter").Info("checking datacenters", datacenters)
 
 			for _, dc := range datacenters {
 				s.Finder.SetDatacenter(dc)
@@ -218,7 +224,7 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 					if err := s.PropertyCollector().RetrieveOne(ctx, networkRef.Reference(), []string{"vm", "name", "key"}, &dvpg); err != nil {
 						return err
 					}
-					logger.Info(fmt.Sprintf("\t\tnetwork %s key %s vm count %d", dvpg.Name, dvpg.Key, len(dvpg.Vm)))
+					logger.WithName("vcenter").Info("checking network", dvpg.Name, len(dvpg.Vm))
 
 					// No virtual machines no problems...
 
@@ -241,10 +247,16 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 								// don't delete templates
 								if vm.Config.CreateDate != nil && !vm.Config.Template {
 									// if the lease was created _after_ the virtual machines then they probably shouldn't be there right?
+
+									logger.WithName("virtual machine").Info("created", vm.Name, vm.Config.CreateDate.String())
+
 									if leaseDeleted || lease.CreationTimestamp.Time.After(*vm.Config.CreateDate) {
 										if lease.Spec.NetworkType == v1.NetworkTypeSingleTenant || lease.Spec.NetworkType == "" {
-											logger.Info(fmt.Sprintf("\t\t\tdestroying vm %s uptime %d created %s lease %s created %s",
-												vm.Name, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String(), lease.Name, lease.CreationTimestamp.String()))
+											logger.WithName("virtual machine").Info("deleting", vm.Name, "uptime", vm.Summary.QuickStats.UptimeSeconds)
+											/*
+												logger.Info(fmt.Sprintf("\t\t\tdestroying vm %s uptime %d created %s lease %s created %s",
+													vm.Name, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String(), lease.Name, lease.CreationTimestamp.String()))
+											*/
 
 											if err := deleteVirtualMachine(ctx, s, vm.Reference()); err != nil {
 												return err
@@ -259,8 +271,12 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 												}
 
 												if strings.Contains(vm.Name, clusterId) || strings.Contains(folderName, clusterId) {
-													logger.Info(fmt.Sprintf("\t\t\tdestroying vm %s with cluster name %s uptime %d created %s lease %s created %s",
-														vm.Name, clusterId, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String(), lease.Name, lease.CreationTimestamp.String()))
+													logger.WithName("virtual machine").Info("deleting", vm.Name, "uptime", vm.Summary.QuickStats.UptimeSeconds)
+													/*
+														logger.Info(fmt.Sprintf("\t\t\tdestroying vm %s with cluster name %s uptime %d created %s lease %s created %s",
+															vm.Name, clusterId, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String(), lease.Name, lease.CreationTimestamp.String()))
+
+													*/
 													if err := deleteVirtualMachine(ctx, s, vm.Reference()); err != nil {
 														return err
 													}
