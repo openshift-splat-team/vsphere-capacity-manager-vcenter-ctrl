@@ -28,7 +28,6 @@ import (
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
 	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/cluster-api-provider-vsphere/pkg/session"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -122,19 +121,18 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		logger.WithName("leases").Info("was deleted", "at", lease.DeletionTimestamp.String())
 	}
 
-	if _, ok := leases[lease.Name]; !ok {
-		if lease.Status.Phase == v1.PHASE_FULFILLED {
+	// cache lease once its been fulfilled
+	if lease.Status.Phase == v1.PHASE_FULFILLED {
+		// only add cache and check for leaking once
+		if _, ok := leases[lease.Name]; !ok {
 			leaseMu.Lock()
 			leases[lease.Name] = lease
 			logger.WithName("leases").Info("cached was created", "name", lease.Name, "at", lease.CreationTimestamp.String())
 			leaseMu.Unlock()
-
 			if err := checkLeasedNetworkForLeakedVirtualMachines(ctx, lease, r.Metadata, false, logger); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
-	} else {
-		logger.WithName("leases").Info("in", "name", lease.Name, "phase", lease.Status.Phase)
 	}
 
 	return ctrl.Result{}, nil
@@ -205,106 +203,115 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 		logger.WithName("vcenter").Info("checking lease", "network", network)
 		for server, _ := range metadata.VCenterCredentials {
 			logger.WithName("vcenter").Info("checking for leaked virtual machines", "vcenter", server)
-			s, err := metadata.Session(ctx, server)
-			if err != nil {
-				return err
-			}
-
-			datacenters, err := s.Finder.DatacenterList(ctx, "*")
-			if err != nil {
-				return err
-			}
-
-			logger.WithName("vcenter").Info("checking", "datacenters", datacenters)
-
-			for _, dc := range datacenters {
-				s.Finder.SetDatacenter(dc)
-				networkBasename := path.Base(network)
-
-				networkList, err := s.Finder.NetworkList(ctx, networkBasename)
-				if err != nil {
-					return err
-				}
-
-				for _, networkRef := range networkList {
-					var dvpg mo.DistributedVirtualPortgroup
-
-					if err := s.PropertyCollector().RetrieveOne(ctx, networkRef.Reference(), []string{"vm", "name", "key"}, &dvpg); err != nil {
+			if virtualMachineManagedObjectRefs, err := getVirtualMachinesFromDistributedPortGroupManagedObject(ctx, server, network, metadata, logger); virtualMachineManagedObjectRefs != nil && err != nil {
+				if len(virtualMachineManagedObjectRefs) > 0 {
+					vmsToDelete, err := getVirtualMachineManagedObjects(ctx, server, lease, virtualMachineManagedObjectRefs, metadata, logger)
+					if err != nil {
 						return err
 					}
-					logger.WithName("vcenter").Info("checking", "network", dvpg.Name, "vm length", len(dvpg.Vm))
+					for _, vm := range vmsToDelete {
+						logger.WithName("virtual machine").Info("deleting", "name", vm.Name, "uptime", vm.Summary.QuickStats.UptimeSeconds)
 
-					// No virtual machines no problems...
-
-					if len(dvpg.Vm) > 0 {
-						virtualMachinesMo := make([]mo.VirtualMachine, 0, len(dvpg.Vm))
-
-						if err := s.PropertyCollector().Retrieve(ctx, dvpg.Vm, []string{"name", "parent", "summary", "config"}, &virtualMachinesMo); err != nil {
+						if err := deleteVirtualMachine(ctx, server, metadata, vm.Reference()); err != nil {
 							return err
 						}
-
-						// there should be no virtual machines left on a ci-vlan- port group
-						for _, vm := range virtualMachinesMo {
-
-							// avoids deleting upi imported rhcos ovas so they can be re-used
-							if strings.HasPrefix(vm.Name, "rhcos-") {
-								continue
-							}
-
-							if vm.Config != nil {
-								// don't delete templates
-								if vm.Config.CreateDate != nil && !vm.Config.Template {
-									// if the lease was created _after_ the virtual machines then they probably shouldn't be there right?
-
-									logger.WithName("virtual machine").Info("created", "name", vm.Name, "at", vm.Config.CreateDate.String())
-
-									if leaseDeleted || lease.CreationTimestamp.Time.After(*vm.Config.CreateDate) {
-										if lease.Spec.NetworkType == v1.NetworkTypeSingleTenant || lease.Spec.NetworkType == "" {
-											logger.WithName("virtual machine").Info("deleting", "name", vm.Name, "uptime", vm.Summary.QuickStats.UptimeSeconds)
-											/*
-												logger.Info(fmt.Sprintf("\t\t\tdestroying vm %s uptime %d created %s lease %s created %s",
-													vm.Name, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String(), lease.Name, lease.CreationTimestamp.String()))
-											*/
-
-											if err := deleteVirtualMachine(ctx, s, vm.Reference()); err != nil {
-												return err
-											}
-										} else {
-											if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok {
-
-												folderCommon := object.NewCommon(s.Client.Client, *vm.Parent)
-												folderName, err := folderCommon.ObjectName(ctx)
-												if err != nil {
-													return err
-												}
-
-												if strings.Contains(vm.Name, clusterId) || strings.Contains(folderName, clusterId) {
-													logger.WithName("virtual machine").Info("deleting", "name", vm.Name, "uptime", vm.Summary.QuickStats.UptimeSeconds)
-													/*
-														logger.Info(fmt.Sprintf("\t\t\tdestroying vm %s with cluster name %s uptime %d created %s lease %s created %s",
-															vm.Name, clusterId, vm.Summary.QuickStats.UptimeSeconds, vm.Config.CreateDate.String(), lease.Name, lease.CreationTimestamp.String()))
-
-													*/
-													if err := deleteVirtualMachine(ctx, s, vm.Reference()); err != nil {
-														return err
-													}
-												}
-											}
-										}
-									}
-								}
-							}
-						}
 					}
+
 				}
+			} else if err != nil {
+				return err
 			}
 		}
 	}
 	return nil
 }
 
-func deleteVirtualMachine(ctx context.Context, session *session.Session, ref types.ManagedObjectReference) error {
-	vmObj := object.NewVirtualMachine(session.Client.Client, ref)
+func getVirtualMachineManagedObjects(ctx context.Context, server string, lease *v1.Lease, vmMoRefs []types.ManagedObjectReference, metadata *vsphere.Metadata, logger logr.Logger) ([]mo.VirtualMachine, error) {
+	s, err := metadata.Session(ctx, server)
+	if err != nil {
+		return nil, err
+	}
+	virtualMachinesMo := make([]mo.VirtualMachine, 0, len(vmMoRefs))
+	virtualMachinesToDelete := make([]mo.VirtualMachine, 0, len(vmMoRefs))
+
+	if err := s.PropertyCollector().Retrieve(ctx, vmMoRefs, []string{"name", "parent", "summary", "config"}, &virtualMachinesMo); err != nil {
+		return nil, err
+	}
+
+	// there should be no virtual machines left on a ci-vlan- port group
+	for _, vm := range virtualMachinesMo {
+		// avoids deleting upi imported rhcos ovas so they can be re-used
+		if strings.HasPrefix(vm.Name, "rhcos-") {
+			continue
+		}
+
+		if vm.Config == nil {
+			logger.WithName("virtual machine").Info("config", "name", vm.Name, "at", "WARN: is nil")
+			continue
+		}
+
+		// don't delete templates
+		if !vm.Config.Template {
+			if vm.Config.CreateDate == nil {
+				logger.WithName("virtual machine").Info("createdate", "name", vm.Name, "at", "WARN: is nil")
+				continue
+			}
+
+			before := vm.Config.CreateDate.Before(lease.CreationTimestamp.Time)
+
+			logger.WithName("virtual machine").Info("created", "name", vm.Name, "at", vm.Config.CreateDate.String(), "before lease", before)
+			logger.WithName("lease").Info("created", "name", lease.Name, "at", lease.CreationTimestamp.String(), "before lease", before)
+
+			if before {
+				virtualMachinesToDelete = append(virtualMachinesToDelete, vm)
+			}
+		}
+	}
+	return virtualMachinesMo, nil
+}
+
+func getVirtualMachinesFromDistributedPortGroupManagedObject(ctx context.Context, server, network string, metadata *vsphere.Metadata, logger logr.Logger) ([]types.ManagedObjectReference, error) {
+	s, err := metadata.Session(ctx, server)
+	if err != nil {
+		return nil, err
+	}
+
+	datacenters, err := s.Finder.DatacenterList(ctx, "*")
+	if err != nil {
+		return nil, err
+	}
+
+	logger.WithName("vcenter").Info("checking", "datacenters", datacenters)
+
+	for _, dc := range datacenters {
+		s.Finder.SetDatacenter(dc)
+		networkBasename := path.Base(network)
+
+		networkList, err := s.Finder.NetworkList(ctx, networkBasename)
+		if err != nil {
+			return nil, err
+		}
+		logger.WithName("vcenter").Info("network", "length", len(networkList))
+
+		for _, networkRef := range networkList {
+			var dvpg mo.DistributedVirtualPortgroup
+
+			if err := s.PropertyCollector().RetrieveOne(ctx, networkRef.Reference(), []string{"vm", "name", "key"}, &dvpg); err != nil {
+				return nil, err
+			}
+			logger.WithName("vcenter").Info("checking", "network", dvpg.Name, "vm length", len(dvpg.Vm))
+			return dvpg.Vm, nil
+		}
+	}
+	return nil, nil
+}
+
+func deleteVirtualMachine(ctx context.Context, server string, metadata *vsphere.Metadata, ref types.ManagedObjectReference) error {
+	s, err := metadata.Session(ctx, server)
+	if err != nil {
+		return err
+	}
+	vmObj := object.NewVirtualMachine(s.Client.Client, ref)
 
 	powerState, err := vmObj.PowerState(ctx)
 	if powerState == types.VirtualMachinePowerStatePoweredOn {
