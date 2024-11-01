@@ -66,7 +66,15 @@ var (
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.16.3/pkg/reconcile
 func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	/*
+		opts := zap.Options{
+			Development: true,
+		}
+
+		log.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	*/
 	logger := log.FromContext(ctx)
+
 	lease := &v1.Lease{}
 
 	logger.WithName("leases").Info("", "number", len(leases))
@@ -111,7 +119,7 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	if lease.DeletionTimestamp != nil {
-		logger.WithName("leases").Info("was deleted at", lease.DeletionTimestamp.String())
+		logger.WithName("leases").Info("was deleted", "at", lease.DeletionTimestamp.String())
 	}
 
 	if _, ok := leases[lease.Name]; !ok {
