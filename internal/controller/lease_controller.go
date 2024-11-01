@@ -269,7 +269,7 @@ func getVirtualMachineManagedObjects(ctx context.Context, server string, lease *
 			virtualMachinesToDelete = append(virtualMachinesToDelete, vm)
 		}
 	}
-	return virtualMachinesMo, nil
+	return virtualMachinesToDelete, nil
 }
 
 func getVirtualMachinesFromDistributedPortGroupManagedObject(ctx context.Context, server, network string, metadata *vsphere.Metadata, logger logr.Logger) ([]types.ManagedObjectReference, error) {
