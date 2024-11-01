@@ -203,20 +203,17 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 		logger.WithName("vcenter").Info("checking lease", "network", network)
 		for server, _ := range metadata.VCenterCredentials {
 			logger.WithName("vcenter").Info("checking for leaked virtual machines", "vcenter", server)
-			if virtualMachineManagedObjectRefs, err := getVirtualMachinesFromDistributedPortGroupManagedObject(ctx, server, network, metadata, logger); virtualMachineManagedObjectRefs != nil && err != nil {
-				if len(virtualMachineManagedObjectRefs) > 0 {
-					vmsToDelete, err := getVirtualMachineManagedObjects(ctx, server, lease, virtualMachineManagedObjectRefs, metadata, logger)
-					if err != nil {
+			if virtualMachineManagedObjectRefs, err := getVirtualMachinesFromDistributedPortGroupManagedObject(ctx, server, network, metadata, logger); virtualMachineManagedObjectRefs != nil && err == nil {
+				vmsToDelete, err := getVirtualMachineManagedObjects(ctx, server, lease, virtualMachineManagedObjectRefs, metadata, logger, leaseDeleted)
+				if err != nil {
+					return err
+				}
+				for _, vm := range vmsToDelete {
+					logger.WithName("virtual machine").Info("deleting", "name", vm.Name, "uptime", vm.Summary.QuickStats.UptimeSeconds)
+
+					if err := deleteVirtualMachine(ctx, server, metadata, vm.Reference()); err != nil {
 						return err
 					}
-					for _, vm := range vmsToDelete {
-						logger.WithName("virtual machine").Info("deleting", "name", vm.Name, "uptime", vm.Summary.QuickStats.UptimeSeconds)
-
-						if err := deleteVirtualMachine(ctx, server, metadata, vm.Reference()); err != nil {
-							return err
-						}
-					}
-
 				}
 			} else if err != nil {
 				return err
@@ -226,7 +223,7 @@ func checkLeasedNetworkForLeakedVirtualMachines(ctx context.Context, lease *v1.L
 	return nil
 }
 
-func getVirtualMachineManagedObjects(ctx context.Context, server string, lease *v1.Lease, vmMoRefs []types.ManagedObjectReference, metadata *vsphere.Metadata, logger logr.Logger) ([]mo.VirtualMachine, error) {
+func getVirtualMachineManagedObjects(ctx context.Context, server string, lease *v1.Lease, vmMoRefs []types.ManagedObjectReference, metadata *vsphere.Metadata, logger logr.Logger, noTimeCheck bool) ([]mo.VirtualMachine, error) {
 	s, err := metadata.Session(ctx, server)
 	if err != nil {
 		return nil, err
@@ -254,22 +251,22 @@ func getVirtualMachineManagedObjects(ctx context.Context, server string, lease *
 		}
 
 		// don't delete templates
-		if !vm.Config.Template {
-			if vm.Config.CreateDate == nil {
-				logger.WithName("virtual machine").Info("createdate", "name", vm.Name, "at", "WARN: is nil")
-				continue
-			}
-
-			before := vm.Config.CreateDate.Before(lease.CreationTimestamp.Time)
-
-			logger.WithName("virtual machine").Info("created", "name", vm.Name, "at", vm.Config.CreateDate.String(), "before lease", before)
-			logger.WithName("lease").Info("created", "name", lease.Name, "at", lease.CreationTimestamp.String(), "before lease", before)
-
-			if before {
-				virtualMachinesToDelete = append(virtualMachinesToDelete, vm)
-			}
-		} else {
+		if vm.Config.Template {
 			logger.WithName("template").Info("ignoring", "name", vm.Name)
+			continue
+		}
+		if vm.Config.CreateDate == nil {
+			logger.WithName("virtual machine").Info("createdate", "name", vm.Name, "at", "WARN: is nil")
+			continue
+		}
+
+		before := vm.Config.CreateDate.Before(lease.CreationTimestamp.Time)
+
+		logger.WithName("virtual machine").Info("created", "name", vm.Name, "at", vm.Config.CreateDate.String(), "before lease", before)
+		logger.WithName("lease").Info("created", "name", lease.Name, "at", lease.CreationTimestamp.String(), "before lease", before)
+
+		if before || noTimeCheck {
+			virtualMachinesToDelete = append(virtualMachinesToDelete, vm)
 		}
 	}
 	return virtualMachinesMo, nil
