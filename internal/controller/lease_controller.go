@@ -234,9 +234,12 @@ func getVirtualMachineManagedObjects(ctx context.Context, server string, lease *
 	virtualMachinesMo := make([]mo.VirtualMachine, 0, len(vmMoRefs))
 	virtualMachinesToDelete := make([]mo.VirtualMachine, 0, len(vmMoRefs))
 
+	logger.WithName("virtual machine").Info("retrieve", "managed objects", vmMoRefs)
 	if err := s.PropertyCollector().Retrieve(ctx, vmMoRefs, []string{"name", "parent", "summary", "config"}, &virtualMachinesMo); err != nil {
 		return nil, err
 	}
+
+	logger.WithName("virtual machines").Info("managed objects", "length", len(virtualMachinesMo))
 
 	// there should be no virtual machines left on a ci-vlan- port group
 	for _, vm := range virtualMachinesMo {
@@ -265,6 +268,8 @@ func getVirtualMachineManagedObjects(ctx context.Context, server string, lease *
 			if before {
 				virtualMachinesToDelete = append(virtualMachinesToDelete, vm)
 			}
+		} else {
+			logger.WithName("template").Info("ignoring", "name", vm.Name)
 		}
 	}
 	return virtualMachinesMo, nil
