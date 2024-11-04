@@ -250,10 +250,12 @@ func getVirtualMachineManagedObjects(ctx context.Context, server string, lease *
 			continue
 		}
 
-		// don't delete templates
+		// delete templates if they start with "ci-"
 		if vm.Config.Template {
 			logger.WithName("template").Info("ignoring", "name", vm.Name)
-			continue
+			if !strings.HasPrefix(vm.Name, "ci-") {
+				continue
+			}
 		}
 		if vm.Config.CreateDate == nil {
 			logger.WithName("virtual machine").Info("createdate", "name", vm.Name, "at", "WARN: is nil")
