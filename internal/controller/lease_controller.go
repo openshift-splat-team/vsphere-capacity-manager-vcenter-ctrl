@@ -22,6 +22,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/vmware/govmomi/object"
@@ -44,11 +45,15 @@ type LeaseReconciler struct {
 	Scheme *runtime.Scheme
 
 	*vsphere.Metadata
+
+	lastCheck time.Time
 }
 
 var (
 	leases  map[string]*v1.Lease
 	leaseMu sync.Mutex
+
+	leakMu sync.Mutex
 )
 
 //+kubebuilder:rbac:groups=vspherecapacitymanager.splat.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
@@ -134,10 +139,27 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			}
 		}
 	}
+	//r.checkLeakage()
 
 	return ctrl.Result{}, nil
 }
 
+/*
+	func (r *LeaseReconciler) checkLeakage() {
+		pastTime := time.Now().Add(time.Hour * -8)
+
+		leakMu.Lock()
+		if pastTime.After(r.lastCheck) {
+			r.lastCheck = time.Now()
+			 * cns volumes
+			 * folders
+			 * tags
+			 * rp
+			 * storage policies
+		}
+		leakMu.Unlock()
+	}
+*/
 func checkLeaseForLeakedTags(ctx context.Context, lease *v1.Lease, metadata *vsphere.Metadata, leaseDeleted bool, logger logr.Logger) error {
 	for server, _ := range metadata.VCenterCredentials {
 		logger.WithName("vcenter").Info("for leaked tags", "vcenter", server)
@@ -285,6 +307,8 @@ func getVirtualMachinesFromDistributedPortGroupManagedObject(ctx context.Context
 		return nil, err
 	}
 
+	var vmMoRefs []types.ManagedObjectReference
+
 	logger.WithName("vcenter").Info("checking", "datacenters", datacenters)
 
 	for _, dc := range datacenters {
@@ -304,10 +328,11 @@ func getVirtualMachinesFromDistributedPortGroupManagedObject(ctx context.Context
 				return nil, err
 			}
 			logger.WithName("vcenter").Info("checking", "network", dvpg.Name, "vm length", len(dvpg.Vm))
-			return dvpg.Vm, nil
+
+			vmMoRefs = append(vmMoRefs, dvpg.Vm...)
 		}
 	}
-	return nil, nil
+	return vmMoRefs, nil
 }
 
 func deleteVirtualMachine(ctx context.Context, server string, metadata *vsphere.Metadata, ref types.ManagedObjectReference) error {
