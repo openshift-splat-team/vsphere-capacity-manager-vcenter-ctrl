@@ -191,7 +191,8 @@ func (v *VSphereObjectReconciler) folder(ctx context.Context) error {
 				v.logger.WithName("folder").Error(err, "children")
 				continue
 			}
-			if len(fc) == 0 && strings.Contains(f.Name(), "ci-") {
+			v.logger.WithName("folder").Info("children", "name", f.Name(), "length", len(fc))
+			if len(fc) == 0 {
 				var task *object.Task
 				v.logger.WithName("folder").Info("delete", "name", f.Name())
 				task, err = f.Destroy(ctx)
