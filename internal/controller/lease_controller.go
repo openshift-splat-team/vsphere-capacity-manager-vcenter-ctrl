@@ -18,21 +18,21 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"path"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/zapr"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
+	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/openshift-splat-team/vsphere-capacity-manager-vcenter-ctrl/pkg/vsphere"
@@ -70,14 +70,13 @@ var (
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.16.3/pkg/reconcile
 func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	/*
-		opts := zap.Options{
-			Development: true,
-		}
+	var logger logr.Logger
+	zapLog, err := zap.NewProduction()
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
-		log.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-	*/
-	logger := log.FromContext(ctx)
+	logger = zapr.NewLogger(zapLog)
 
 	lease := &v1.Lease{}
 
@@ -139,27 +138,10 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			}
 		}
 	}
-	//r.checkLeakage()
 
 	return ctrl.Result{}, nil
 }
 
-/*
-	func (r *LeaseReconciler) checkLeakage() {
-		pastTime := time.Now().Add(time.Hour * -8)
-
-		leakMu.Lock()
-		if pastTime.After(r.lastCheck) {
-			r.lastCheck = time.Now()
-			 * cns volumes
-			 * folders
-			 * tags
-			 * rp
-			 * storage policies
-		}
-		leakMu.Unlock()
-	}
-*/
 func checkLeaseForLeakedTags(ctx context.Context, lease *v1.Lease, metadata *vsphere.Metadata, leaseDeleted bool, logger logr.Logger) error {
 	for server, _ := range metadata.VCenterCredentials {
 		logger.WithName("vcenter").Info("for leaked tags", "vcenter", server)
@@ -188,22 +170,21 @@ func checkLeaseForLeakedTags(ctx context.Context, lease *v1.Lease, metadata *vsp
 	return nil
 }
 func checkLeaseForLeakedFolders(ctx context.Context, lease *v1.Lease, metadata *vsphere.Metadata, leaseDeleted bool, logger logr.Logger) error {
-	for server, _ := range metadata.VCenterCredentials {
-		s, err := metadata.Session(ctx, server)
-		if err != nil {
-			return err
-		}
+	if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok && leaseDeleted {
+		for server, _ := range metadata.VCenterCredentials {
+			s, err := metadata.Session(ctx, server)
+			if err != nil {
+				return err
+			}
 
-		folders, err := s.Finder.FolderList(ctx, "*")
-		if err != nil {
-			return err
-		}
-		logger.WithName("vcenter").Info("checking for leaked folders", "vcenter", server, "number", len(folders))
+			folders, err := s.Finder.FolderList(ctx, "*")
+			if err != nil {
+				return err
+			}
+			logger.WithName("vcenter").Info("checking for leaked folders", "vcenter", server, "number", len(folders))
 
-		if clusterId, ok := lease.ObjectMeta.Labels["cluster-id"]; ok && leaseDeleted {
 			for _, f := range folders {
 				if strings.Contains(f.Name(), clusterId) {
-					logger.Info(fmt.Sprintf("\tdeleting folder %s", f.Name()))
 					logger.WithName("vcenter").Info("deleting", "vcenter", server, "folder", f.Name())
 					var task *object.Task
 					if task, err = f.Destroy(ctx); err != nil {
