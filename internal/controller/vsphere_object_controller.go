@@ -54,12 +54,15 @@ func (v *VSphereObjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				delay:   time.Hour,
 				lastRun: time.Now(),
 			},
-			{
-				name:    "tags",
-				execute: v.tag,
-				delay:   time.Hour * 8,
-				lastRun: time.Now(),
-			},
+			/*
+				{
+					name:    "tags",
+					execute: v.tag,
+					delay:   time.Hour * 8,
+					lastRun: time.Now(),
+				},
+
+			*/
 			{
 				name:    "cnsvolumes",
 				execute: v.cns,
