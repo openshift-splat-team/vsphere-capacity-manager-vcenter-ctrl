@@ -1,24 +1,14 @@
-/*
-Copyright (c) 2024-2024 VMware, Inc. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// © Broadcom. All Rights Reserved.
+// The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: Apache-2.0
 
 package object
 
 import (
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 
 	"github.com/vmware/govmomi/vim25/types"
 )
@@ -42,6 +32,65 @@ func OptionValueListFromMap[T any](in map[string]T) OptionValueList {
 		i++
 	}
 	return out
+}
+
+// IsTrue returns true if the specified key exists with an empty value or value
+// equal to 1, "1", "on", "t", true, "true", "y", or "yes".
+// All string comparisons are case-insensitive.
+func (ov OptionValueList) IsTrue(key string) bool {
+	return ov.isTrueOrFalse(key, true, 1, "", "1", "on", "t", "true", "y", "yes")
+}
+
+// IsFalse returns true if the specified key exists and has a value equal to
+// 0, "0", "f", false, "false", "n", "no", or "off".
+// All string comparisons are case-insensitive.
+func (ov OptionValueList) IsFalse(key string) bool {
+	return ov.isTrueOrFalse(key, false, 0, "0", "f", "false", "n", "no", "off")
+}
+
+func (ov OptionValueList) isTrueOrFalse(
+	key string,
+	boolVal bool,
+	numVal int,
+	strVals ...string) bool {
+
+	val, ok := ov.Get(key)
+	if !ok {
+		return false
+	}
+
+	switch tval := val.(type) {
+	case string:
+		return slices.Contains(strVals, strings.ToLower(tval))
+	case bool:
+		return tval == boolVal
+	case uint:
+		return tval == uint(numVal)
+	case uint8:
+		return tval == uint8(numVal)
+	case uint16:
+		return tval == uint16(numVal)
+	case uint32:
+		return tval == uint32(numVal)
+	case uint64:
+		return tval == uint64(numVal)
+	case int:
+		return tval == int(numVal)
+	case int8:
+		return tval == int8(numVal)
+	case int16:
+		return tval == int16(numVal)
+	case int32:
+		return tval == int32(numVal)
+	case int64:
+		return tval == int64(numVal)
+	case float32:
+		return tval == float32(numVal)
+	case float64:
+		return tval == float64(numVal)
+	}
+
+	return false
 }
 
 // Get returns the value if exists, otherwise nil is returned. The second return

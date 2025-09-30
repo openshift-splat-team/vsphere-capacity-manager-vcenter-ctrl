@@ -1,22 +1,13 @@
-/*
-Copyright (c) 2015-2024 VMware, Inc. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// © Broadcom. All Rights Reserved.
+// The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: Apache-2.0
 
 package types
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"net/url"
 	"reflect"
 	"strings"
@@ -29,6 +20,10 @@ func EnumValuesAsStrings[T ~string](enumValues []T) []string {
 		stringValues[i] = string(enumValues[i])
 	}
 	return stringValues
+}
+
+func New[T any](t T) *T {
+	return &t
 }
 
 func NewBool(v bool) *bool {
@@ -314,6 +309,78 @@ func (ci VirtualMachineConfigInfo) ToConfigSpec() VirtualMachineConfigSpec {
 	}
 
 	return cs
+}
+
+// ToString returns the string-ified version of the provided input value by
+// first attempting to encode the value to JSON using the vimtype JSON encoder,
+// and if that should fail, using the standard JSON encoder, and if that fails,
+// returning the value formatted with Sprintf("%v").
+//
+// Please note, this function is not intended to replace marshaling the data
+// to JSON using the normal workflows. This function is for when a string-ified
+// version of the data is needed for things like logging.
+func ToString(in AnyType) (s string) {
+	if in == nil {
+		return "null"
+	}
+
+	marshalWithSprintf := func() string {
+		return fmt.Sprintf("%v", in)
+	}
+
+	defer func() {
+		if err := recover(); err != nil {
+			s = marshalWithSprintf()
+		}
+	}()
+
+	rv := reflect.ValueOf(in)
+	switch rv.Kind() {
+
+	case reflect.Bool,
+		reflect.Complex64, reflect.Complex128,
+		reflect.Float32, reflect.Float64:
+
+		return fmt.Sprintf("%v", in)
+
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Uintptr:
+
+		return fmt.Sprintf("%d", in)
+
+	case reflect.String:
+		return in.(string)
+
+	case reflect.Interface, reflect.Pointer:
+		if rv.IsZero() {
+			return "null"
+		}
+		return ToString(rv.Elem().Interface())
+	}
+
+	marshalWithStdlibJSONEncoder := func() string {
+		data, err := json.Marshal(in)
+		if err != nil {
+			return marshalWithSprintf()
+		}
+		return string(data)
+	}
+
+	defer func() {
+		if err := recover(); err != nil {
+			s = marshalWithStdlibJSONEncoder()
+		}
+	}()
+
+	var w bytes.Buffer
+	enc := NewJSONEncoder(&w)
+	if err := enc.Encode(in); err != nil {
+		return marshalWithStdlibJSONEncoder()
+	}
+
+	// Do not include the newline character added by the vimtype JSON encoder.
+	return strings.TrimSuffix(w.String(), "\n")
 }
 
 func init() {
