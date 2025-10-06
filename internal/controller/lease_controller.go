@@ -88,17 +88,19 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				r.logger.Error(err, "failed to get ManagedEntitiesByClusterId", "lease_name", l.Name)
 			}
 
-			r.logger.WithName("leases").Info("getting children of managed entities")
-			tempChildMe, err := r.childrenOfFolder(ctx, managedEntities, l.Name)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
+			if len(managedEntities) != 0 {
+				r.logger.WithName("leases").Info("getting children of managed entities")
+				tempChildMe, err := r.childrenOfFolder(ctx, managedEntities, l.Name)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
 
-			managedEntities = append(managedEntities, tempChildMe...)
+				managedEntities = append(managedEntities, tempChildMe...)
 
-			r.logger.WithName("leases").Info("deleting managed entities")
-			if err := r.deleteByManagedEntity(ctx, managedEntities, l.Name); err != nil {
-				r.logger.Error(err, "failed to delete ManagedEntitiesByClusterId", "lease_name", l.Name)
+				r.logger.WithName("leases").Info("deleting managed entities")
+				if err := r.deleteByManagedEntity(ctx, managedEntities, l.Name); err != nil {
+					r.logger.Error(err, "failed to delete ManagedEntitiesByClusterId", "lease_name", l.Name)
+				}
 			}
 
 			r.logger.WithName("leases").Info("deleting managed entities")
@@ -310,6 +312,7 @@ func (r *LeaseReconciler) deleteVirtualMachine(ctx context.Context, server strin
 func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, leaseName string) ([]mo.ManagedEntity, error) {
 	var clusterId string
 	var ok bool
+	var managedEntities []mo.ManagedEntity
 
 	l, err := r.getLeaseByName(leaseName)
 	if err != nil {
@@ -319,22 +322,17 @@ func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, lea
 	if clusterId, ok = l.Labels["cluster-id"]; !ok {
 		return nil, fmt.Errorf("cluster id not found in lease")
 	}
-	var managedEntities []mo.ManagedEntity
 
-	for server := range r.Metadata.VCenterCredentials {
-		v, err := r.Metadata.ContainerView(ctx, server)
-		if err != nil {
-			r.logger.Error(err, "failed to establish vCenter session", "vcenter", server)
-			continue
+	v, err := r.Metadata.ContainerView(ctx, l.Status.Server)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := v.RetrieveWithFilter(ctx, []string{"ManagedEntity"}, nil, &managedEntities, property.Match{"name": fmt.Sprintf("%s*", clusterId)}); err != nil {
+		if strings.Contains(err.Error(), "object references is empty") {
+			return nil, nil
 		}
-		var tempManagedEntities []mo.ManagedEntity
-
-		if err := v.RetrieveWithFilter(ctx, []string{"ManagedEntity"}, nil, &tempManagedEntities, property.Match{"name": fmt.Sprintf("%s*", clusterId)}); err != nil {
-			r.logger.Error(err, "failed to retrieve managed entities", "cluster-id", clusterId)
-			continue
-		}
-
-		managedEntities = append(managedEntities, tempManagedEntities...)
+		return nil, err
 	}
 
 	r.logger.Info("managed entities", "cluster-id", clusterId, "count", len(managedEntities))
