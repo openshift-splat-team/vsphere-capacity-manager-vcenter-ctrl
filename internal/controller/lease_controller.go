@@ -80,9 +80,16 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if l, err := r.getLeaseByName(req.Name); err != nil {
 			r.logger.WithName("leases").Error(err, "lease not found in cache", "name", req.Name)
 		} else {
+
+			var clusterId string
+			var ok bool
+			if clusterId, ok = l.Labels["cluster-id"]; !ok {
+				r.logger.WithName("leases").Error(err, "cluster id not found in cached lease", "name", l.Name)
+			}
+
 			r.logger.WithName("leases").Info("lease found in cache, starting cleanup process", "name", l.Name, "creation_timestamp", l.CreationTimestamp.Format(time.RFC3339))
 
-			r.logger.WithName("leases").Info("getting managed entities by cluster id")
+			r.logger.WithName("leases").Info("getting managed entities by cluster id", "cluster_id", clusterId)
 			managedEntities, err := r.getManagedEntitiesByClusterId(ctx, l.Name)
 			if err != nil {
 				r.logger.Error(err, "failed to get ManagedEntitiesByClusterId", "lease_name", l.Name)
@@ -103,7 +110,7 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				}
 			}
 
-			r.logger.WithName("leases").Info("deleting managed entities")
+			r.logger.WithName("leases").Info("deleting tags by cluster id", "cluster_id")
 			if err := r.deleteTagsByClusterId(ctx, l.Name); err != nil {
 				r.logger.Error(err, "failed to cleanup leaked tags")
 				return ctrl.Result{}, err
@@ -320,7 +327,7 @@ func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, lea
 	}
 
 	if clusterId, ok = l.Labels["cluster-id"]; !ok {
-		return nil, fmt.Errorf("cluster id not found in lease")
+		return nil, fmt.Errorf("cluster id %s not found in lease", clusterId)
 	}
 
 	v, err := r.Metadata.ContainerView(ctx, l.Status.Server)
@@ -398,6 +405,7 @@ func (r *LeaseReconciler) deleteByManagedEntity(ctx context.Context, managedEnti
 	}
 
 	for _, managedEntity := range managedEntities {
+		r.logger.WithName("deleteByManagedEntity").Info("deleting managed entity", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
 		if managedEntity.Reference().Type == "VirtualMachine" {
 			if err := r.deleteVirtualMachine(ctx, l.Status.Server, managedEntity.Reference()); err != nil {
 				return err
