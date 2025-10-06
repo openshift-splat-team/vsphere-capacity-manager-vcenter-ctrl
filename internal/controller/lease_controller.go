@@ -270,9 +270,20 @@ func (r *LeaseReconciler) deleteVirtualMachine(ctx context.Context, server strin
 	}
 	vmObj := object.NewVirtualMachine(s.Client.Client, ref)
 
-	if powerState, err := vmObj.PowerState(ctx); err == nil && powerState == types.VirtualMachinePowerStatePoweredOn {
-		if task, err := vmObj.PowerOff(ctx); err == nil {
-			return task.Wait(ctx)
+	objName, err := vmObj.ObjectName(ctx)
+	if err != nil {
+		return err
+	}
+	r.logger.Info("deleting virtual machine", "name", objName)
+
+	if powerState, err := vmObj.PowerState(ctx); err == nil {
+		r.logger.Info("virtual machine power state", "name", objName, "power_state", powerState)
+		if powerState == types.VirtualMachinePowerStatePoweredOn {
+			if task, err := vmObj.PowerOff(ctx); err == nil {
+				if err := task.Wait(ctx); err != nil {
+					return err
+				}
+			}
 		}
 	}
 
