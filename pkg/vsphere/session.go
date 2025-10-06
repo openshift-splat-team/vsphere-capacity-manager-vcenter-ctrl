@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/vmware/govmomi/view"
 	"sigs.k8s.io/cluster-api-provider-vsphere/pkg/session"
 )
 
@@ -23,6 +24,8 @@ type Metadata struct {
 	sessions           map[string]*session.Session
 	credentials        map[string]*session.Params
 	VCenterCredentials map[string]VCenterCredential
+
+	containerView map[string]*view.ContainerView
 }
 
 // NewMetadata initializes a new Metadata object.
@@ -68,6 +71,24 @@ func (m *Metadata) Session(ctx context.Context, server string) (*session.Session
 	}
 
 	return m.unlockedSession(ctx, server)
+}
+
+func (m *Metadata) ContainerView(ctx context.Context, server string) (*view.ContainerView, error) {
+	if m.containerView == nil {
+		m.containerView = make(map[string]*view.ContainerView)
+	}
+	return m.unlockedContainerView(ctx, server)
+}
+
+func (m *Metadata) unlockedContainerView(ctx context.Context, server string) (*view.ContainerView, error) {
+	s, err := m.unlockedSession(ctx, server)
+
+	if err != nil {
+		return nil, err
+	}
+
+	viewMgr := view.NewManager(s.Client.Client)
+	return viewMgr.CreateContainerView(ctx, s.Client.ServiceContent.RootFolder, nil, true)
 }
 
 func (m *Metadata) unlockedSession(ctx context.Context, server string) (*session.Session, error) {

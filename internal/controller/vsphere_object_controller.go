@@ -85,7 +85,7 @@ func (v *VSphereObjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (v *VSphereObjectReconciler) cns(ctx context.Context) error {
-	for server, _ := range v.Metadata.VCenterCredentials {
+	for server := range v.Metadata.VCenterCredentials {
 		var c *cns.Client
 		var qr *cnstypes.CnsQueryResult
 
@@ -108,7 +108,7 @@ func (v *VSphereObjectReconciler) cns(ctx context.Context) error {
 			continue
 		}
 
-		qr, err = c.QueryVolume(ctx, cnstypes.CnsQueryFilter{})
+		qr, err = c.QueryAllVolume(ctx, cnstypes.CnsQueryFilter{}, cnstypes.CnsQuerySelection{})
 		if err != nil {
 			v.logger.WithName("cns").Error(err, "QueryAllVolume")
 			continue
@@ -173,7 +173,7 @@ func getFolderList(s *session.Session, logger logr.Logger) ([]*object.Folder, ma
 }
 
 func (v *VSphereObjectReconciler) folder(ctx context.Context) error {
-	for server, _ := range v.Metadata.VCenterCredentials {
+	for server := range v.Metadata.VCenterCredentials {
 		v.logger.WithName("folder").Info("vcenter", "name", server)
 		s, err := v.Metadata.Session(ctx, server)
 		if err != nil {
@@ -220,7 +220,7 @@ func (v *VSphereObjectReconciler) folder(ctx context.Context) error {
  */
 
 func (v *VSphereObjectReconciler) tag(ctx context.Context) error {
-	for server, _ := range v.Metadata.VCenterCredentials {
+	for server := range v.Metadata.VCenterCredentials {
 		v.logger.WithName("tag").Info("vcenter", "name", server)
 		s, err := v.Metadata.Session(ctx, server)
 		if err != nil {
