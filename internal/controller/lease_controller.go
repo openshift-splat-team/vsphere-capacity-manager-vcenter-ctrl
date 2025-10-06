@@ -195,13 +195,16 @@ func (r *LeaseReconciler) getFilteredVirtualMachines(ctx context.Context, moRefs
 
 		// Parent managed entity of the virtual machine, this _should_ be a folder that was created
 		// if its "vm" then the virtual machine should be deleted
-		if err := pc.RetrieveOne(ctx, *vm.Parent, []string{"name"}, &parentMe); err != nil {
-			return nil, err
+		if vm.Parent != nil {
+			if err := pc.RetrieveOne(ctx, *vm.Parent, []string{"name"}, &parentMe); err != nil {
+				return nil, err
+			}
+			if strings.Contains(parentMe.Name, clusterId) {
+				continue
+			}
 		}
 
 		switch {
-		case strings.Contains(parentMe.Name, clusterId):
-			continue
 		case strings.Contains(vm.Name, clusterId):
 			continue
 		case strings.HasPrefix(vm.Name, "rhcos-"):
