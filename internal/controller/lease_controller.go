@@ -198,6 +198,9 @@ func (r *LeaseReconciler) getFilteredVirtualMachines(ctx context.Context, moRefs
 
 	pc := property.DefaultCollector(s.Client.Client)
 	if err := pc.Retrieve(ctx, moRefs, nil, &virtualMachines); err != nil {
+		if strings.Contains(err.Error(), "object references is empty") {
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -210,6 +213,9 @@ func (r *LeaseReconciler) getFilteredVirtualMachines(ctx context.Context, moRefs
 		// if its "vm" then the virtual machine should be deleted
 		if vm.Parent != nil {
 			if err := pc.RetrieveOne(ctx, *vm.Parent, []string{"name"}, &parentMe); err != nil {
+				if strings.Contains(err.Error(), "object references is empty") {
+					continue
+				}
 				return nil, err
 			}
 			if strings.Contains(parentMe.Name, clusterId) {
@@ -253,6 +259,9 @@ func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, 
 			portGroupName := path.Base(network)
 			var networks []mo.Network
 			if err := v.RetrieveWithFilter(ctx, []string{"Network"}, []string{}, &networks, property.Match{"name": portGroupName}); err != nil {
+				if strings.Contains(err.Error(), "object references is empty") {
+					continue
+				}
 				return err
 			}
 
@@ -383,6 +392,9 @@ func (r *LeaseReconciler) childrenOfFolder(ctx context.Context, managedEntities 
 			childRefs := toManagedObjectRefs(children)
 
 			if err := pc.Retrieve(ctx, childRefs, nil, &tempChildMe); err != nil {
+				if strings.Contains(err.Error(), "object references is empty") {
+					return nil, nil
+				}
 				return nil, err
 			}
 			toReturnMe = append(toReturnMe, tempChildMe...)
