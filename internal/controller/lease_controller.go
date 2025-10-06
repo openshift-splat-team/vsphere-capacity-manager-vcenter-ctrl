@@ -195,13 +195,16 @@ func (r *LeaseReconciler) getFilteredVirtualMachines(ctx context.Context, moRefs
 
 		// Parent managed entity of the virtual machine, this _should_ be a folder that was created
 		// if its "vm" then the virtual machine should be deleted
-		if err := pc.RetrieveOne(ctx, *vm.Parent, []string{"name"}, &parentMe); err != nil {
-			return nil, err
+		if vm.Parent != nil {
+			if err := pc.RetrieveOne(ctx, *vm.Parent, []string{"name"}, &parentMe); err != nil {
+				return nil, err
+			}
+			if strings.Contains(parentMe.Name, clusterId) {
+				continue
+			}
 		}
 
 		switch {
-		case strings.Contains(parentMe.Name, clusterId):
-			continue
 		case strings.Contains(vm.Name, clusterId):
 			continue
 		case strings.HasPrefix(vm.Name, "rhcos-"):
@@ -270,9 +273,20 @@ func (r *LeaseReconciler) deleteVirtualMachine(ctx context.Context, server strin
 	}
 	vmObj := object.NewVirtualMachine(s.Client.Client, ref)
 
-	if powerState, err := vmObj.PowerState(ctx); err == nil && powerState == types.VirtualMachinePowerStatePoweredOn {
-		if task, err := vmObj.PowerOff(ctx); err == nil {
-			return task.Wait(ctx)
+	objName, err := vmObj.ObjectName(ctx)
+	if err != nil {
+		return err
+	}
+	r.logger.Info("deleting virtual machine", "name", objName)
+
+	if powerState, err := vmObj.PowerState(ctx); err == nil {
+		r.logger.Info("virtual machine power state", "name", objName, "power_state", powerState)
+		if powerState == types.VirtualMachinePowerStatePoweredOn {
+			if task, err := vmObj.PowerOff(ctx); err == nil {
+				if err := task.Wait(ctx); err != nil {
+					return err
+				}
+			}
 		}
 	}
 
