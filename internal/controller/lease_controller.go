@@ -110,7 +110,7 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				}
 			}
 
-			r.logger.WithName("leases").Info("deleting tags by cluster id", "cluster_id")
+			r.logger.WithName("leases").Info("deleting tags by cluster id", "cluster_id", clusterId)
 			if err := r.deleteTagsByClusterId(ctx, l.Name); err != nil {
 				r.logger.Error(err, "failed to cleanup leaked tags")
 				return ctrl.Result{}, err
