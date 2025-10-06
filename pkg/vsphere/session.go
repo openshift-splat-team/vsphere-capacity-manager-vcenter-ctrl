@@ -82,23 +82,26 @@ func (m *Metadata) ContainerView(ctx context.Context, server string) (*view.Cont
 
 func (m *Metadata) unlockedContainerView(ctx context.Context, server string) (*view.ContainerView, error) {
 	s, err := m.unlockedSession(ctx, server)
-
 	if err != nil {
 		return nil, err
 	}
 
-	viewMgr := view.NewManager(s.Client.Client)
-	return viewMgr.CreateContainerView(ctx, s.Client.ServiceContent.RootFolder, nil, true)
+	if _, ok := m.containerView[server]; !ok {
+		viewMgr := view.NewManager(s.Client.Client)
+		m.containerView[server], err = viewMgr.CreateContainerView(ctx, s.Client.ServiceContent.RootFolder, nil, true)
+		if err != nil {
+			return nil, err
+		}
+		return m.containerView[server], nil
+	}
+	return m.containerView[server], nil
 }
 
 func (m *Metadata) unlockedSession(ctx context.Context, server string) (*session.Session, error) {
 	var err error
-	var ok bool
-	var params *session.Params
-
-	if params, ok = m.credentials[server]; !ok {
-		if creds, ok := m.VCenterCredentials[server]; ok {
-			params, err = m.AddCredentials(server, creds.Username, creds.Password)
+	if _, ok := m.credentials[server]; !ok {
+		if c, ok := m.VCenterCredentials[server]; ok {
+			_, err := m.AddCredentials(server, c.Username, c.Password)
 			if err != nil {
 				return nil, err
 			}
@@ -108,15 +111,19 @@ func (m *Metadata) unlockedSession(ctx context.Context, server string) (*session
 	}
 
 	// if nil we haven't created a session
-	if _, ok := m.sessions[server]; ok {
-		m.sessions[server], err = session.GetOrCreate(ctx, params)
+	if _, ok := m.sessions[server]; !ok {
+		m.sessions[server], err = session.GetOrCreate(ctx, m.credentials[server])
+		if err != nil {
+			return nil, err
+		}
+		return m.sessions[server], nil
+	} else if m.sessions[server] == nil {
+		m.sessions[server], err = session.GetOrCreate(ctx, m.credentials[server])
 		if err != nil {
 			return nil, err
 		}
 		return m.sessions[server], nil
 	}
 
-	// If we have gotten here there is no session for the server name, create.
-	m.sessions[server], err = session.GetOrCreate(ctx, params)
-	return m.sessions[server], err
+	return m.sessions[server], nil
 }
