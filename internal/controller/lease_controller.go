@@ -82,11 +82,13 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		} else {
 			r.logger.WithName("leases").Info("lease found in cache, starting cleanup process", "name", l.Name, "creation_timestamp", l.CreationTimestamp.Format(time.RFC3339))
 
+			r.logger.WithName("leases").Info("getting managed entities by cluster id")
 			managedEntities, err := r.getManagedEntitiesByClusterId(ctx, l.Name)
 			if err != nil {
 				r.logger.Error(err, "failed to get ManagedEntitiesByClusterId", "lease_name", l.Name)
 			}
 
+			r.logger.WithName("leases").Info("getting children of managed entities")
 			tempChildMe, err := r.childrenOfFolder(ctx, managedEntities, l.Name)
 			if err != nil {
 				return ctrl.Result{}, err
@@ -94,10 +96,12 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 			managedEntities = append(managedEntities, tempChildMe...)
 
+			r.logger.WithName("leases").Info("deleting managed entities")
 			if err := r.deleteByManagedEntity(ctx, managedEntities, l.Name); err != nil {
 				r.logger.Error(err, "failed to delete ManagedEntitiesByClusterId", "lease_name", l.Name)
 			}
 
+			r.logger.WithName("leases").Info("deleting managed entities")
 			if err := r.deleteTagsByClusterId(ctx, l.Name); err != nil {
 				r.logger.Error(err, "failed to cleanup leaked tags")
 				return ctrl.Result{}, err
@@ -318,26 +322,23 @@ func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, lea
 	var managedEntities []mo.ManagedEntity
 
 	for server := range r.Metadata.VCenterCredentials {
-		func(server string) {
-			v, err := r.Metadata.ContainerView(ctx, server)
-			if err != nil {
-				r.logger.Error(err, "failed to establish vCenter session for tag cleanup", "vcenter", server)
-				return
-			}
-			defer func() {
-				if err := v.Destroy(ctx); err != nil {
-					r.logger.Error(err, "failed to destroy vCenter session for tag cleanup")
-				}
-			}()
-			var tempManagedEntities []mo.ManagedEntity
+		v, err := r.Metadata.ContainerView(ctx, server)
+		if err != nil {
+			r.logger.Error(err, "failed to establish vCenter session", "vcenter", server)
+			continue
+		}
+		var tempManagedEntities []mo.ManagedEntity
 
-			if err := v.RetrieveWithFilter(ctx, []string{"ManagedEntity"}, nil, &tempManagedEntities, property.Match{"name": fmt.Sprintf("%s*", clusterId)}); err != nil {
-				return
-			}
+		if err := v.RetrieveWithFilter(ctx, []string{"ManagedEntity"}, nil, &tempManagedEntities, property.Match{"name": fmt.Sprintf("%s*", clusterId)}); err != nil {
+			r.logger.Error(err, "failed to retrieve managed entities", "cluster-id", clusterId)
+			continue
+		}
 
-			managedEntities = append(managedEntities, tempManagedEntities...)
-		}(server)
+		managedEntities = append(managedEntities, tempManagedEntities...)
 	}
+
+	r.logger.Info("managed entities", "cluster-id", clusterId, "count", len(managedEntities))
+
 	return managedEntities, nil
 }
 
@@ -482,7 +483,7 @@ func (r *LeaseReconciler) cleanupTagsOnServer(ctx context.Context, server, clust
 // Configures logging and event filtering for lease resources.
 func (r *LeaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.leases = make(map[string]*v1.Lease)
-	zapLog, err := zap.NewProduction()
+	zapLog, err := zap.NewProduction(zap.AddCaller())
 	if err != nil {
 		return err
 	}
