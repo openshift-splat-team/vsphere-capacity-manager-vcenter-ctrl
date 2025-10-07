@@ -28,6 +28,7 @@ import (
 	"github.com/go-logr/zapr"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/property"
+	"github.com/vmware/govmomi/view"
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
 	"go.uber.org/zap"
@@ -203,6 +204,7 @@ func (r *LeaseReconciler) getFilteredVirtualMachines(ctx context.Context, moRefs
 		}
 		return nil, err
 	}
+	defer pc.Destroy(ctx)
 
 	var toReturn []mo.VirtualMachine
 
@@ -239,6 +241,7 @@ func (r *LeaseReconciler) getFilteredVirtualMachines(ctx context.Context, moRefs
 func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, leaseName string) error {
 	var clusterId string
 	var ok bool
+	var containerViews []*view.ContainerView
 
 	l, err := r.getLeaseByName(leaseName)
 	if err != nil {
@@ -254,6 +257,7 @@ func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, 
 		if err != nil {
 			return err
 		}
+		containerViews = append(containerViews, v)
 
 		for _, network := range l.Status.Topology.Networks {
 			portGroupName := path.Base(network)
@@ -281,6 +285,9 @@ func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, 
 				}
 			}
 		}
+	}
+	if err := r.Metadata.DestroyContainerViews(ctx, containerViews); err != nil {
+		return err
 	}
 
 	return nil
@@ -351,6 +358,10 @@ func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, lea
 		return nil, err
 	}
 
+	if err := r.Metadata.DestroyContainerViews(ctx, []*view.ContainerView{v}); err != nil {
+		return nil, err
+	}
+
 	r.logger.Info("managed entities", "cluster-id", clusterId, "count", len(managedEntities))
 
 	return managedEntities, nil
@@ -379,6 +390,7 @@ func (r *LeaseReconciler) childrenOfFolder(ctx context.Context, managedEntities 
 		return nil, err
 	}
 	pc := property.DefaultCollector(s.Client.Client)
+	defer pc.Destroy(ctx)
 
 	for _, managedEntity := range managedEntities {
 		if managedEntity.Reference().Type == "Folder" {

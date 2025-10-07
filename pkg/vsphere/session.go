@@ -74,27 +74,23 @@ func (m *Metadata) Session(ctx context.Context, server string) (*session.Session
 }
 
 func (m *Metadata) ContainerView(ctx context.Context, server string) (*view.ContainerView, error) {
-	if m.containerView == nil {
-		m.containerView = make(map[string]*view.ContainerView)
-	}
-	return m.unlockedContainerView(ctx, server)
-}
-
-func (m *Metadata) unlockedContainerView(ctx context.Context, server string) (*view.ContainerView, error) {
 	s, err := m.unlockedSession(ctx, server)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, ok := m.containerView[server]; !ok {
-		viewMgr := view.NewManager(s.Client.Client)
-		m.containerView[server], err = viewMgr.CreateContainerView(ctx, s.Client.ServiceContent.RootFolder, nil, true)
-		if err != nil {
-			return nil, err
+	viewMgr := view.NewManager(s.Client.Client)
+	return viewMgr.CreateContainerView(ctx, s.Client.ServiceContent.RootFolder, nil, true)
+}
+
+func (m *Metadata) DestroyContainerViews(ctx context.Context, containerViews []*view.ContainerView) error {
+	for _, v := range containerViews {
+		if err := v.Destroy(ctx); err != nil {
+			return err
 		}
-		return m.containerView[server], nil
 	}
-	return m.containerView[server], nil
+
+	return nil
 }
 
 func (m *Metadata) unlockedSession(ctx context.Context, server string) (*session.Session, error) {
