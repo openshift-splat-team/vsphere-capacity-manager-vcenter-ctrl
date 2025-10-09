@@ -106,19 +106,11 @@ func (m *Metadata) unlockedSession(ctx context.Context, server string) (*session
 		}
 	}
 
-	// if nil we haven't created a session
-	if _, ok := m.sessions[server]; !ok {
-		m.sessions[server], err = session.GetOrCreate(ctx, m.credentials[server])
-		if err != nil {
-			return nil, err
-		}
-		return m.sessions[server], nil
-	} else if m.sessions[server] == nil {
-		m.sessions[server], err = session.GetOrCreate(ctx, m.credentials[server])
-		if err != nil {
-			return nil, err
-		}
-		return m.sessions[server], nil
+	// We are going to keep this simple since session is
+	// caching the session anyway. Always set the m.sessions[server]
+	m.sessions[server], err = session.GetOrCreate(ctx, m.credentials[server])
+	if err != nil {
+		return nil, err
 	}
 
 	return m.sessions[server], nil
