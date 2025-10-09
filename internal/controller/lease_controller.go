@@ -321,9 +321,18 @@ func (r *LeaseReconciler) deleteVirtualMachine(ctx context.Context, server strin
 
 	destroyTask, err := vmObj.Destroy(ctx)
 	if err != nil {
+		if strings.Contains(err.Error(), "Permission to perform this operation was denied") {
+			r.logger.Error(err, "deleting virtual machine", "name", objName)
+			return nil
+		}
+
 		return err
 	}
 	if err := destroyTask.Wait(ctx); err != nil {
+		if strings.Contains(err.Error(), "Permission to perform this operation was denied") {
+			r.logger.Error(err, "deleting virtual machine", "name", objName)
+			return nil
+		}
 		return err
 	}
 
