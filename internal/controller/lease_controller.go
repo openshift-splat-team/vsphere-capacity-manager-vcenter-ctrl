@@ -29,6 +29,7 @@ import (
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/property"
 	"github.com/vmware/govmomi/view"
+	"github.com/vmware/govmomi/vim25"
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
 	"go.uber.org/zap"
@@ -437,24 +438,45 @@ func (r *LeaseReconciler) deleteByManagedEntity(ctx context.Context, managedEnti
 		return err
 	}
 
+	var saveFoldersMe []mo.ManagedEntity
+
 	for _, managedEntity := range managedEntities {
 		r.logger.WithName("deleteByManagedEntity").Info("deleting managed entity", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
-		if managedEntity.Reference().Type == "VirtualMachine" {
+		switch managedEntity.Reference().Type {
+		case "Folder":
+			saveFoldersMe = append(saveFoldersMe, managedEntity)
+		case "VirtualMachine":
 			if err := r.deleteVirtualMachine(ctx, l.Status.Server, managedEntity.Reference()); err != nil {
-				return err
-			}
-		} else {
-			common := object.NewCommon(s.Client.Client, managedEntity.Reference())
-			task, err := common.Destroy(ctx)
-			if err != nil {
-				r.logger.Error(err, "failed to destroy managed entity", "entity", managedEntity.Reference())
+				r.logger.Error(err, "failed to delete managed entity", "entity", managedEntity.Name)
 				continue
 			}
-
-			if err := task.Wait(ctx); err != nil {
-				return err
+		default:
+			if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {
+				r.logger.Error(err, "failed to destroy managed entity", "entity", managedEntity.Name)
+				continue
 			}
 		}
+	}
+
+	// After the virtual machines are deleted, now delete the folder(s)
+	for _, managedEntity := range saveFoldersMe {
+		if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {
+			r.logger.Error(err, "failed to destroy managed entity", "entity", managedEntity.Name)
+			continue
+		}
+	}
+
+	return nil
+}
+func deleteManagedEntity(ctx context.Context, managedEntity mo.ManagedEntity, c *vim25.Client) error {
+	common := object.NewCommon(c, managedEntity.Reference())
+	task, err := common.Destroy(ctx)
+	if err != nil {
+		return err
+	}
+
+	if err := task.Wait(ctx); err != nil {
+		return err
 	}
 	return nil
 }
