@@ -438,8 +438,8 @@ func (r *LeaseReconciler) deleteByManagedEntity(ctx context.Context, managedEnti
 		return err
 	}
 
-	var foldersManagedEntities map[string]mo.ManagedEntity
-	var virtualMachines map[string]struct{}
+	foldersManagedEntities := make(map[string]mo.ManagedEntity)
+	virtualMachines := make(map[string]struct{})
 
 	for _, managedEntity := range managedEntities {
 		r.logger.WithName("deleteByManagedEntity").Info("deleting managed entity", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
