@@ -438,28 +438,35 @@ func (r *LeaseReconciler) deleteByManagedEntity(ctx context.Context, managedEnti
 		return err
 	}
 
-	var saveFoldersMe []mo.ManagedEntity
+	var foldersManagedEntities map[string]mo.ManagedEntity
+	var virtualMachines map[string]struct{}
 
 	for _, managedEntity := range managedEntities {
 		r.logger.WithName("deleteByManagedEntity").Info("deleting managed entity", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
 		switch managedEntity.Reference().Type {
 		case "Folder":
-			saveFoldersMe = append(saveFoldersMe, managedEntity)
+			if _, ok := foldersManagedEntities[managedEntity.Reference().Value]; !ok {
+				foldersManagedEntities[managedEntity.Reference().Value] = managedEntity
+			}
 		case "VirtualMachine":
-			if err := r.deleteVirtualMachine(ctx, l.Status.Server, managedEntity.Reference()); err != nil {
-				r.logger.Error(err, "failed to delete managed entity", "entity", managedEntity.Name)
-				continue
+			// only delete the virtual machine once
+			if _, ok := virtualMachines[managedEntity.Reference().Value]; !ok {
+				virtualMachines[managedEntity.Reference().Value] = struct{}{}
+				if err := r.deleteVirtualMachine(ctx, l.Status.Server, managedEntity.Reference()); err != nil {
+					r.logger.Error(err, "failed to delete managed entity", "entity", managedEntity.Name)
+					continue
+				}
 			}
 		default:
 			if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {
-				r.logger.Error(err, "failed to destroy managed entity", "entity", managedEntity.Name)
+				r.logger.Error(err, "failed to destroy managed entity", "entity", managedEntity.Name, "type", managedEntity.Reference().Type)
 				continue
 			}
 		}
 	}
 
 	// After the virtual machines are deleted, now delete the folder(s)
-	for _, managedEntity := range saveFoldersMe {
+	for _, managedEntity := range foldersManagedEntities {
 		if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {
 			r.logger.Error(err, "failed to destroy managed entity", "entity", managedEntity.Name)
 			continue
