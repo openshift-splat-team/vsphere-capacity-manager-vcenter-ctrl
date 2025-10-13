@@ -31,6 +31,7 @@ import (
 	"github.com/vmware/govmomi/view"
 	"github.com/vmware/govmomi/vim25"
 	"github.com/vmware/govmomi/vim25/mo"
+	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -322,14 +323,22 @@ func (r *LeaseReconciler) deleteVirtualMachine(ctx context.Context, server strin
 
 	destroyTask, err := vmObj.Destroy(ctx)
 	if err != nil {
-		if strings.Contains(err.Error(), "Permission to perform this operation was denied") {
-			r.logger.Error(err, "deleting virtual machine", "name", objName)
-			return nil
-		}
+		faultMsg := extractFaultMessageFromErr(err)
+		r.logger.Error(err, "destroy virtual machine", "name", objName, "fault_message", faultMsg)
 
-		return err
+		switch {
+		case strings.Contains(err.Error(), "Invalid virtual machine state."):
+			return nil
+		case strings.Contains(err.Error(), "Permission to perform this operation was denied"):
+			return nil
+		default:
+			return err
+		}
 	}
 	if err := destroyTask.Wait(ctx); err != nil {
+		faultMsg := extractFaultMessageFromErr(err)
+		r.logger.Error(err, "destroy virtual machine", "name", objName, "fault_message", faultMsg)
+
 		if strings.Contains(err.Error(), "Permission to perform this operation was denied") {
 			r.logger.Error(err, "deleting virtual machine", "name", objName)
 			return nil
@@ -375,6 +384,24 @@ func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, lea
 	r.logger.Info("managed entities", "cluster-id", clusterId, "count", len(managedEntities))
 
 	return managedEntities, nil
+}
+
+func extractFaultMessageFromErr(err error) string {
+	if soap.IsSoapFault(err) {
+		soapFault := soap.ToSoapFault(err)
+		if soapFault != nil {
+			return soapFault.String
+		}
+	}
+
+	if soap.IsVimFault(err) {
+		vimFault := soap.ToVimFault(err)
+		methodFault := vimFault.GetMethodFault()
+		if methodFault != nil && methodFault.FaultCause != nil {
+			return methodFault.FaultCause.LocalizedMessage
+		}
+	}
+	return ""
 }
 
 // toManagedObjectRefs converts object references to managed object references.
