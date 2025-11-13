@@ -55,15 +55,12 @@ func (v *VSphereObjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				delay:   time.Hour,
 				lastRun: time.Now(),
 			},
-			/*
-				{
-					name:    "tags",
-					execute: v.tag,
-					delay:   time.Hour * 8,
-					lastRun: time.Now(),
-				},
-
-			*/
+			{
+				name:    "tags",
+				execute: v.tag,
+				delay:   time.Hour * 8,
+				lastRun: time.Now(),
+			},
 			{
 				name:    "cnsvolumes",
 				execute: v.cns,
@@ -237,45 +234,77 @@ func (v *VSphereObjectReconciler) tag(ctx context.Context) error {
 		allTags, err := s.TagManager.GetTags(ctx)
 		if err != nil {
 			v.logger.WithName("tag").Error(err, "GetTags")
+			continue
 		}
 		_, folderNameMap, err := getFolderList(s, v.logger)
 		if err != nil {
-			v.logger.WithName("folder").Error(err, "getFolderList")
+			v.logger.WithName("tag").Error(err, "getFolderList")
 			continue
 		}
 
 		for _, t := range allTags {
-			if strings.Contains(t.Name, "ci-") {
-				if _, ok := folderNameMap[t.Name]; !ok {
-					attached, err := s.TagManager.GetAttachedObjectsOnTags(ctx, []string{t.ID})
-					if err != nil {
-						v.logger.WithName("tag").Error(err, "GetAttachedObjectsOnTags")
+			// Only process CI tags
+			if !strings.Contains(t.Name, "ci-") {
+				continue
+			}
+
+			// Protect zonal tags (us-east, us-west, etc.)
+			if strings.HasPrefix(t.Name, "us-") {
+				v.logger.WithName("tag").Info("skipping protected zonal tag", "name", t.Name)
+				continue
+			}
+
+			// Skip if tag name matches an existing folder (cluster still active)
+			if _, ok := folderNameMap[t.Name]; ok {
+				v.logger.WithName("tag").Info("skipping tag with matching folder", "name", t.Name)
+				continue
+			}
+
+			// Get attached objects
+			attached, err := s.TagManager.GetAttachedObjectsOnTags(ctx, []string{t.ID})
+			if err != nil {
+				v.logger.WithName("tag").Error(err, "GetAttachedObjectsOnTags", "tag", t.Name)
+				continue
+			}
+
+			attachmentCount := len(attached)
+			v.logger.WithName("tag").Info("tag attachment count", "name", t.Name, "count", attachmentCount)
+
+			// FIXED BUG: Only delete tags with ZERO attachments (was <= 1)
+			// Tags with any attachments should not be deleted
+			if attachmentCount == 0 {
+				v.logger.WithName("tag").Info("deleting unused tag", "name", t.Name)
+				if err := s.TagManager.DeleteTag(ctx, &t); err != nil {
+					v.logger.WithName("tag").Error(err, "DeleteTag", "tag", t.Name)
+					continue
+				}
+
+				// Try to delete the category if it's now empty
+				cat, err := s.TagManager.GetCategory(ctx, t.CategoryID)
+				if err != nil {
+					v.logger.WithName("tag").Error(err, "GetCategory", "categoryID", t.CategoryID)
+					continue
+				}
+
+				// Get remaining tags in this category
+				tagsInCategory, err := s.TagManager.GetTagsForCategory(ctx, t.CategoryID)
+				if err != nil {
+					v.logger.WithName("tag").Error(err, "GetTagsForCategory", "category", cat.Name)
+					continue
+				}
+
+				// Only delete category if it's now empty
+				if len(tagsInCategory) == 0 {
+					v.logger.WithName("tag").Info("deleting empty category", "name", cat.Name)
+					if err := s.TagManager.DeleteCategory(ctx, cat); err != nil {
+						v.logger.WithName("tag").Error(err, "DeleteCategory", "category", cat.Name)
 						continue
 					}
-
-					v.logger.WithName("tag").Info("attached", "name", t.Name, "length", len(attached))
-
-					// Why <= 1?
-					// The tag attachment to the datastore remains if the tag is not previously deleted by the installer
-					if len(attached) <= 1 {
-						v.logger.WithName("tag").Info("delete", "name", t.Name)
-						if err := s.TagManager.DeleteTag(ctx, &t); err != nil {
-							v.logger.WithName("tag").Error(err, "GetCategory")
-							continue
-						}
-
-						cat, err := s.TagManager.GetCategory(ctx, t.CategoryID)
-						if err != nil {
-							v.logger.WithName("tag").Error(err, "GetCategory")
-							continue
-						}
-						v.logger.WithName("tag").Info("delete", "name", cat.Name)
-						if err := s.TagManager.DeleteCategory(ctx, cat); err != nil {
-							v.logger.WithName("tag").Error(err, "GetCategory")
-							continue
-						}
-					}
+				} else {
+					v.logger.WithName("tag").Info("skipping category deletion", "name", cat.Name, "remaining_tags", len(tagsInCategory))
 				}
+			} else {
+				v.logger.WithName("tag").Info("skipping tag with attachments", "name", t.Name, "count", attachmentCount)
 			}
 		}
 	}
