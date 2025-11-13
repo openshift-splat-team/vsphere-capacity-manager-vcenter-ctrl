@@ -10,6 +10,7 @@ import (
 	"github.com/vmware/govmomi/cns"
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/vim25/mo"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/cluster-api-provider-vsphere/pkg/session"
@@ -67,6 +68,12 @@ func (v *VSphereObjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				name:    "cnsvolumes",
 				execute: v.cns,
 				delay:   time.Hour * 8,
+				lastRun: time.Now(),
+			},
+			{
+				name:    "resourcepools",
+				execute: v.resourcepool,
+				delay:   time.Hour * 2,
 				lastRun: time.Now(),
 			},
 		}
@@ -268,6 +275,78 @@ func (v *VSphereObjectReconciler) tag(ctx context.Context) error {
 							continue
 						}
 					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (v *VSphereObjectReconciler) resourcepool(ctx context.Context) error {
+	for server := range v.Metadata.VCenterCredentials {
+		v.logger.WithName("resourcepool").Info("vcenter", "name", server)
+		s, err := v.Metadata.Session(ctx, server)
+		if err != nil {
+			v.logger.WithName("resourcepool").Error(err, "vcenter", "name", server)
+			continue
+		}
+
+		// Get all datacenters
+		datacenters, err := s.Finder.DatacenterList(ctx, "*")
+		if err != nil {
+			v.logger.WithName("resourcepool").Error(err, "datacenter list")
+			continue
+		}
+
+		for _, dc := range datacenters {
+			v.logger.WithName("resourcepool").Info("datacenter", "name", dc.Name())
+			s.Finder.SetDatacenter(dc)
+
+			// Find all resource pools in this datacenter
+			resourcePools, err := s.Finder.ResourcePoolList(ctx, "*")
+			if err != nil {
+				v.logger.WithName("resourcepool").Error(err, "list")
+				continue
+			}
+
+			for _, rp := range resourcePools {
+				rpName := rp.Name()
+
+				// Only process resource pools matching ci-* or qeci-* patterns
+				if !strings.HasPrefix(rpName, "ci-") && !strings.HasPrefix(rpName, "qeci-") {
+					continue
+				}
+
+				v.logger.WithName("resourcepool").Info("checking", "name", rpName)
+
+				// Get VMs in this resource pool using property collector
+				var rpMo mo.ResourcePool
+				err = rp.Properties(ctx, rp.Reference(), []string{"vm"}, &rpMo)
+				if err != nil {
+					v.logger.WithName("resourcepool").Error(err, "get properties", "name", rpName)
+					continue
+				}
+
+				vmCount := len(rpMo.Vm)
+
+				// Only delete if resource pool is empty
+				if vmCount == 0 {
+					v.logger.WithName("resourcepool").Info("delete empty resource pool", "name", rpName)
+					task, err := rp.Destroy(ctx)
+					if err != nil {
+						v.logger.WithName("resourcepool").Error(err, "destroy", "name", rpName)
+						continue
+					}
+
+					if err := task.Wait(ctx); err != nil {
+						v.logger.WithName("resourcepool").Error(err, "task wait", "name", rpName)
+						continue
+					}
+
+					v.logger.WithName("resourcepool").Info("deleted", "name", rpName)
+				} else {
+					v.logger.WithName("resourcepool").Info("skipping non-empty resource pool", "name", rpName, "vm_count", vmCount)
 				}
 			}
 		}
