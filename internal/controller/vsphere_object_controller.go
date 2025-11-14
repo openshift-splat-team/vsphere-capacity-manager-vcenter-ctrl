@@ -10,6 +10,8 @@ import (
 	"github.com/vmware/govmomi/cns"
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/pbm"
+	pbmtypes "github.com/vmware/govmomi/pbm/types"
 	"github.com/vmware/govmomi/vim25/mo"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -71,6 +73,12 @@ func (v *VSphereObjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				name:    "resourcepools",
 				execute: v.resourcepool,
 				delay:   time.Hour * 2,
+				lastRun: time.Now(),
+			},
+			{
+				name:    "storagepolicies",
+				execute: v.storagepolicy,
+				delay:   time.Hour * 12,
 				lastRun: time.Now(),
 			},
 		}
@@ -376,6 +384,89 @@ func (v *VSphereObjectReconciler) resourcepool(ctx context.Context) error {
 					v.logger.WithName("resourcepool").Info("deleted", "name", rpName)
 				} else {
 					v.logger.WithName("resourcepool").Info("skipping non-empty resource pool", "name", rpName, "vm_count", vmCount)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (v *VSphereObjectReconciler) storagepolicy(ctx context.Context) error {
+	for server := range v.Metadata.VCenterCredentials {
+		v.logger.WithName("storagepolicy").Info("vcenter", "name", server)
+		s, err := v.Metadata.Session(ctx, server)
+		if err != nil {
+			v.logger.WithName("storagepolicy").Error(err, "vcenter", "name", server)
+			continue
+		}
+
+		// Create PBM client for storage policy management
+		pbmClient, err := pbm.NewClient(ctx, s.Client.Client)
+		if err != nil {
+			v.logger.WithName("storagepolicy").Error(err, "create pbm client")
+			continue
+		}
+
+		// Get all storage policies
+		resourceType := pbmtypes.PbmProfileResourceType{
+			ResourceType: string(pbmtypes.PbmProfileResourceTypeEnumSTORAGE),
+		}
+		profileIds, err := pbmClient.QueryProfile(ctx, resourceType, "")
+		if err != nil {
+			v.logger.WithName("storagepolicy").Error(err, "query profiles")
+			continue
+		}
+
+		// Retrieve policy details
+		policies, err := pbmClient.RetrieveContent(ctx, profileIds)
+		if err != nil {
+			v.logger.WithName("storagepolicy").Error(err, "retrieve policy content")
+			continue
+		}
+
+		// Get folder list for cluster existence checks
+		_, folderNameMap, err := getFolderList(s, v.logger)
+		if err != nil {
+			v.logger.WithName("storagepolicy").Error(err, "getFolderList")
+			continue
+		}
+
+		// Process each policy
+		for _, policy := range policies {
+			policyName := policy.GetPbmProfile().Name
+
+			// Check if policy matches openshift-storage-policy- pattern
+			if strings.HasPrefix(policyName, "openshift-storage-policy-") {
+				// Extract cluster ID from policy name
+				clusterId := strings.TrimPrefix(policyName, "openshift-storage-policy-")
+
+				if clusterId != "" {
+					v.logger.WithName("storagepolicy").Info("checking policy", "name", policyName, "clusterId", clusterId)
+
+					// Check if cluster folder exists (cluster still active)
+					clusterExists := false
+					for folderName := range folderNameMap {
+						if strings.HasPrefix(folderName, clusterId) {
+							clusterExists = true
+							v.logger.WithName("storagepolicy").Info("cluster exists", "clusterId", clusterId, "folder", folderName)
+							break
+						}
+					}
+
+					// Delete policy if cluster doesn't exist
+					if !clusterExists {
+						v.logger.WithName("storagepolicy").Info("deleting orphaned storage policy", "name", policyName, "clusterId", clusterId)
+						profileId := []pbmtypes.PbmProfileId{policy.GetPbmProfile().ProfileId}
+						_, err := pbmClient.DeleteProfile(ctx, profileId)
+						if err != nil {
+							v.logger.WithName("storagepolicy").Error(err, "delete policy", "name", policyName)
+							continue
+						}
+						v.logger.WithName("storagepolicy").Info("deleted policy", "name", policyName)
+					} else {
+						v.logger.WithName("storagepolicy").Info("skipping policy for active cluster", "name", policyName, "clusterId", clusterId)
+					}
 				}
 			}
 		}
