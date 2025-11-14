@@ -13,6 +13,7 @@ import (
 	"github.com/vmware/govmomi/pbm"
 	pbmtypes "github.com/vmware/govmomi/pbm/types"
 	"github.com/vmware/govmomi/vim25/mo"
+	"github.com/vmware/govmomi/vim25/types"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/cluster-api-provider-vsphere/pkg/session"
@@ -79,6 +80,12 @@ func (v *VSphereObjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				name:    "storagepolicies",
 				execute: v.storagepolicy,
 				delay:   time.Hour * 12,
+				lastRun: time.Now(),
+			},
+			{
+				name:    "kubevols",
+				execute: v.kubevols,
+				delay:   time.Hour * 24,
 				lastRun: time.Now(),
 			},
 		}
@@ -466,6 +473,132 @@ func (v *VSphereObjectReconciler) storagepolicy(ctx context.Context) error {
 						v.logger.WithName("storagepolicy").Info("deleted policy", "name", policyName)
 					} else {
 						v.logger.WithName("storagepolicy").Info("skipping policy for active cluster", "name", policyName, "clusterId", clusterId)
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (v *VSphereObjectReconciler) kubevols(ctx context.Context) error {
+	const (
+		kubevolPath     = "kubevols"
+		minAgeInDays    = 21
+		vmdkFilePattern = "*.vmdk"
+	)
+
+	for server := range v.Metadata.VCenterCredentials {
+		v.logger.WithName("kubevols").Info("vcenter", "name", server)
+		s, err := v.Metadata.Session(ctx, server)
+		if err != nil {
+			v.logger.WithName("kubevols").Error(err, "vcenter", "name", server)
+			continue
+		}
+
+		// Get all datastores to search for kubevols directories
+		datacenters, err := s.Finder.DatacenterList(ctx, "*")
+		if err != nil {
+			v.logger.WithName("kubevols").Error(err, "datacenter list")
+			continue
+		}
+
+		for _, dc := range datacenters {
+			s.Finder.SetDatacenter(dc)
+
+			datastores, err := s.Finder.DatastoreList(ctx, "*")
+			if err != nil {
+				v.logger.WithName("kubevols").Error(err, "datastore list")
+				continue
+			}
+
+			for _, ds := range datastores {
+				v.logger.WithName("kubevols").Info("checking datastore", "name", ds.Name())
+
+				// Create datastore browser
+				browser, err := ds.Browser(ctx)
+				if err != nil {
+					v.logger.WithName("kubevols").Error(err, "get browser", "datastore", ds.Name())
+					continue
+				}
+
+				// Construct the kubevols path
+				kubevolsPath := ds.Path(kubevolPath)
+
+				// Create search spec for .vmdk files
+				searchSpec := types.HostDatastoreBrowserSearchSpec{
+					MatchPattern: []string{vmdkFilePattern},
+					Details: &types.FileQueryFlags{
+						FileType:     true,
+						FileSize:     true,
+						Modification: true,
+					},
+				}
+
+				// Search for files in kubevols directory
+				task, err := browser.SearchDatastore(ctx, kubevolsPath, &searchSpec)
+				if err != nil {
+					// Directory might not exist on this datastore, continue
+					if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
+						v.logger.WithName("kubevols").Info("kubevols directory not found", "datastore", ds.Name())
+						continue
+					}
+					v.logger.WithName("kubevols").Error(err, "search datastore", "datastore", ds.Name())
+					continue
+				}
+
+				result, err := task.WaitForResult(ctx)
+				if err != nil {
+					v.logger.WithName("kubevols").Error(err, "wait for search result", "datastore", ds.Name())
+					continue
+				}
+
+				searchResult, ok := result.Result.(types.HostDatastoreBrowserSearchResults)
+				if !ok {
+					v.logger.WithName("kubevols").Error(nil, "unexpected search result type", "datastore", ds.Name())
+					continue
+				}
+
+				// Process each file
+				for _, fileInfo := range searchResult.File {
+					if fileInfo.GetFileInfo() == nil {
+						continue
+					}
+
+					file := fileInfo.GetFileInfo()
+					if file.Modification == nil {
+						v.logger.WithName("kubevols").Info("skipping file without modification time", "file", file.Path)
+						continue
+					}
+
+					// Calculate age of the file
+					age := time.Since(*file.Modification)
+					ageInDays := int(age.Hours() / 24)
+
+					if ageInDays >= minAgeInDays {
+						filePath := ds.Path(kubevolPath + "/" + file.Path)
+						v.logger.WithName("kubevols").Info("deleting old kubevol file",
+							"file", file.Path,
+							"age_days", ageInDays,
+							"path", filePath)
+
+						// Delete the file
+						fileManager := object.NewFileManager(s.Client.Client)
+						deleteTask, err := fileManager.DeleteDatastoreFile(ctx, filePath, dc)
+						if err != nil {
+							v.logger.WithName("kubevols").Error(err, "delete file", "file", filePath)
+							continue
+						}
+
+						if err := deleteTask.Wait(ctx); err != nil {
+							v.logger.WithName("kubevols").Error(err, "wait for delete", "file", filePath)
+							continue
+						}
+
+						v.logger.WithName("kubevols").Info("deleted old kubevol file", "file", file.Path, "age_days", ageInDays)
+					} else {
+						v.logger.WithName("kubevols").Info("skipping recent file", "file", file.Path, "age_days", ageInDays)
 					}
 				}
 			}
