@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vsphere-cleanup-config
+  namespace: system
+data:
+  # Cleanup operation intervals (in hours)
+  cleanup.intervals.folders: "1"
+  cleanup.intervals.tags: "8"
+  cleanup.intervals.cnsvolumes: "8"
+  cleanup.intervals.resourcepools: "2"
+  cleanup.intervals.storagepolicies: "12"
+  cleanup.intervals.kubevols: "24"
+
+  # Safety thresholds
+  safety.min_age_hours: "2"
+  safety.grace_period_hours: "12"
+  safety.kubevols_min_age_days: "21"
+
+  # Feature flags
+  features.dry_run: "false"
+  features.enable_folders: "true"
+  features.enable_tags: "true"
+  features.enable_cnsvolumes: "true"
+  features.enable_resourcepools: "true"
+  features.enable_storagepolicies: "true"
+  features.enable_kubevols: "true"
+
+  # Protected resources (comma-separated patterns)
+  protection.zonal_tags: "us-east,us-west,us-central"
+  protection.system_folders: "debug,template"
+
+  # Operational settings
+  operations.max_deletions_per_run: "100"
+  operations.max_deletion_rate: "0.25"  # Never delete >25% of resources in one run
+  operations.concurrent_vcenters: "3"
+
+  # Logging
+  logging.level: "info"
+  logging.format: "json"
+  logging.enable_audit_log: "true"
