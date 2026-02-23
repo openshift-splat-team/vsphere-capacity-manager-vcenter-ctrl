@@ -20,9 +20,9 @@ require (
 	k8s.io/api v0.30.3
 	k8s.io/apimachinery v0.30.3
 	k8s.io/client-go v0.30.3
-	mvdan.cc/sh/v3 v3.8.0
 	sigs.k8s.io/cluster-api-provider-vsphere v1.11.1
 	sigs.k8s.io/controller-runtime v0.18.5
+	sigs.k8s.io/yaml v1.4.0
 )
 
 require (
@@ -58,12 +58,12 @@ require (
 	github.com/prometheus/client_model v0.6.0 // indirect
 	github.com/prometheus/common v0.45.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
+	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56 // indirect
 	golang.org/x/net v0.42.0 // indirect
 	golang.org/x/oauth2 v0.21.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/term v0.33.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
@@ -81,5 +81,4 @@ require (
 	sigs.k8s.io/cluster-api v0.0.0-00010101000000-000000000000 // indirect
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
-	sigs.k8s.io/yaml v1.4.0 // indirect
 )

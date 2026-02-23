@@ -3,24 +3,21 @@ package utils
 import (
 	"context"
 	"fmt"
-	"io"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"mvdan.cc/sh/v3/interp"
-	"mvdan.cc/sh/v3/syntax"
-
 	"github.com/openshift-splat-team/vsphere-capacity-manager-vcenter-ctrl/pkg/vsphere"
 )
 
+// Secret key names following the CAPV identity pattern.
 const (
-	vcenterPasswordsKey = "vcenter_passwords"
-	vcenterUsernamesKey = "vcenter_usernames"
+	UsernameKey = "username"
+	PasswordKey = "password"
 )
 
+// GetSecret reads a specific data key from a Kubernetes Secret.
 func GetSecret(namespace, secret, dataKey string, c client.Client) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
 	defer cancel()
@@ -37,68 +34,27 @@ func GetSecret(namespace, secret, dataKey string, c client.Client) (string, erro
 	}
 }
 
-func parseAuthShellScript(reader io.Reader) (username, password string, err error) {
-	r, err := interp.New()
-	if err != nil {
-		return "", "", err
-	}
-
-	f, err := syntax.NewParser().Parse(reader, "")
-	if err != nil {
-		return "", "", err
-	}
-
-	if err := r.Run(context.Background(), f); err != nil {
-		return "", "", err
-	}
-
-	if usernames, ok := r.Vars[vcenterUsernamesKey]; ok {
-		if len(usernames.List) > 0 {
-			username = usernames.List[0]
-		}
-	}
-	if passwords, ok := r.Vars[vcenterPasswordsKey]; ok {
-		if len(passwords.List) > 0 {
-			password = passwords.List[0]
-		}
-	}
-
-	if username == "" || password == "" {
-		return "", "", fmt.Errorf("unable to parse auth shell script, no username or password set")
-	}
-
-	return username, password, nil
-}
-
-func GetVSphereMetadataBySecretString(namespace, secretNames, secretDatakeys, secretVCenters string, c client.Client) (*vsphere.Metadata, error) {
+// GetVSphereMetadataFromConfig builds vsphere.Metadata by reading credential
+// Secrets referenced from the controller config's vcenters list.
+// Each Secret is expected to have "username" and "password" keys.
+func GetVSphereMetadataFromConfig(namespace string, vcenters []VCenterConfig, c client.Client) (*vsphere.Metadata, error) {
 	metadata := vsphere.NewMetadata()
-	secrets := strings.Split(secretNames, ",")
-	datakeys := strings.Split(secretDatakeys, ",")
-	servers := strings.Split(secretVCenters, ",")
 
-	if len(secrets) != len(datakeys) {
-		return nil, fmt.Errorf("command line does not have enough arguments for secret names and data keys")
-	}
-
-	if len(secrets) != len(servers) {
-		return nil, fmt.Errorf("command line does not have enough arguments for secret names and vcenters")
-	}
-
-	for i, s := range secrets {
-		secretString, err := GetSecret(namespace, s, datakeys[i], c)
+	for _, vc := range vcenters {
+		username, err := GetSecret(namespace, vc.SecretRef, UsernameKey, c)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to read username from secret %s/%s: %w", namespace, vc.SecretRef, err)
 		}
 
-		username, password, err := parseAuthShellScript(strings.NewReader(secretString))
-
+		password, err := GetSecret(namespace, vc.SecretRef, PasswordKey, c)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to read password from secret %s/%s: %w", namespace, vc.SecretRef, err)
 		}
-		_, err = metadata.AddCredentials(servers[i], username, password)
-		if err != nil {
-			return nil, err
+
+		if _, err := metadata.AddCredentials(vc.Server, username, password); err != nil {
+			return nil, fmt.Errorf("failed to add credentials for server %s: %w", vc.Server, err)
 		}
 	}
+
 	return metadata, nil
 }

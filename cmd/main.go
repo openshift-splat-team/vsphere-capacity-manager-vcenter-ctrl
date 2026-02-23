@@ -60,9 +60,7 @@ func main() {
 	var enableLeaderElection bool
 
 	var secretNamespace string
-	var secretDatakeys string
-	var secretNames string
-	var secretVCenters string
+	var configName string
 
 	var probeAddr string
 	var secureMetrics bool
@@ -78,11 +76,7 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 
 	flag.StringVar(&secretNamespace, "secret-namespace", "", "Namespace that the controller uses for vSphere vCenter secrets")
-	flag.StringVar(&secretNames, "secrets", "", "Comma delimited list of secret names that contains vSphere vCenter secrets")
-	flag.StringVar(&secretDatakeys, "secret-data-keys", "", "Comma delimited list of secret names that contains vSphere vCenter secrets")
-
-	// todo: jcallen: I absolutely do not like this but for speed ignoring my ocd
-	flag.StringVar(&secretVCenters, "secret-vcenters", "", "Comma delimited list of secret vcenter names")
+	flag.StringVar(&configName, "config-name", "vsphere-cleanup-config", "Name of the ConfigMap containing controller configuration")
 
 	opts := zap.Options{
 		Development: true,
@@ -149,7 +143,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	metadata, err := utils.GetVSphereMetadataBySecretString(secretNamespace, secretNames, secretDatakeys, secretVCenters, nonCachedClient)
+	controllerConfig, err := utils.ReadControllerConfig(secretNamespace, configName, nonCachedClient)
+	if err != nil {
+		setupLog.Error(err, "unable to read controller config")
+		os.Exit(1)
+	}
+
+	metadata, err := utils.GetVSphereMetadataFromConfig(secretNamespace, controllerConfig.VCenters, nonCachedClient)
 	if err != nil {
 		setupLog.Error(err, "unable to get vSphere metadata")
 		os.Exit(1)

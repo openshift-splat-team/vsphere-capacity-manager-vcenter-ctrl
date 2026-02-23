@@ -4,38 +4,51 @@ metadata:
   name: vsphere-cleanup-config
   namespace: system
 data:
-  # Cleanup operation intervals (in hours)
-  cleanup.intervals.folders: "1"
-  cleanup.intervals.tags: "8"
-  cleanup.intervals.cnsvolumes: "8"
-  cleanup.intervals.resourcepools: "2"
-  cleanup.intervals.storagepolicies: "12"
-  cleanup.intervals.kubevols: "24"
+  config.yaml: |
+    vcenters:
+      - server: 10.0.0.1
+        secretRef: vcenter1-credentials
+      - server: 1.2.3.4
+        secretRef: vcenter2-credentials
 
-  # Safety thresholds
-  safety.min_age_hours: "2"
-  safety.grace_period_hours: "12"
-  safety.kubevols_min_age_days: "21"
+    cleanup:
+      intervals:
+        folders: 1
+        tags: 8
+        cnsvolumes: 8
+        resourcepools: 2
+        storagepolicies: 12
+        kubevols: 24
 
-  # Feature flags
-  features.dry_run: "false"
-  features.enable_folders: "true"
-  features.enable_tags: "true"
-  features.enable_cnsvolumes: "true"
-  features.enable_resourcepools: "true"
-  features.enable_storagepolicies: "true"
-  features.enable_kubevols: "true"
+    safety:
+      min_age_hours: 2
+      grace_period_hours: 12
+      kubevols_min_age_days: 21
 
-  # Protected resources (comma-separated patterns)
-  protection.zonal_tags: "us-east,us-west,us-central"
-  protection.system_folders: "debug,template"
+    features:
+      dry_run: false
+      enable_folders: true
+      enable_tags: true
+      enable_cnsvolumes: true
+      enable_resourcepools: true
+      enable_storagepolicies: true
+      enable_kubevols: true
 
-  # Operational settings
-  operations.max_deletions_per_run: "100"
-  operations.max_deletion_rate: "0.25"  # Never delete >25% of resources in one run
-  operations.concurrent_vcenters: "3"
+    protection:
+      zonal_tags:
+        - us-east
+        - us-west
+        - us-central
+      system_folders:
+        - debug
+        - template
 
-  # Logging
-  logging.level: "info"
-  logging.format: "json"
-  logging.enable_audit_log: "true"
+    operations:
+      max_deletions_per_run: 100
+      max_deletion_rate: 0.25
+      concurrent_vcenters: 3
+
+    logging:
+      level: info
+      format: json
+      enable_audit_log: true
