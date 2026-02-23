@@ -35,18 +35,16 @@ data:
       enable_kubevols: true
 
     protection:
-      zonal_tags:
+      tags:
         - us-east
         - us-west
         - us-central
-      system_folders:
+      folders:
         - debug
         - template
-
-    operations:
-      max_deletions_per_run: 100
-      max_deletion_rate: 0.25
-      concurrent_vcenters: 3
+      resourcepools:
+        - ci-
+        - qeci-
 
     logging:
       level: info

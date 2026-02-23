@@ -165,9 +165,14 @@ func main() {
 	}
 
 	if err = (&controller.VSphereObjectReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Metadata: metadata,
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Metadata:   metadata,
+		Protection: controllerConfig.Protection,
+		Safety:     controllerConfig.Safety,
+		Features:   controllerConfig.Features,
+		Cleanup:    controllerConfig.Cleanup,
+		Logging:    controllerConfig.Logging,
 	}).SetupWithManager(mgr); err != nil {
 		os.Exit(1)
 	}
