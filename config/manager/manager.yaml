@@ -70,6 +70,8 @@ spec:
         - /manager
         args:
         - --leader-elect
+        - --secret-namespace=system
+        - --config-name=vsphere-cleanup-config
         image: controller:latest
         name: manager
         securityContext:

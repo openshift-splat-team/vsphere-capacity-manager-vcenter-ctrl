@@ -238,8 +238,27 @@ func (r *LeaseReconciler) getFilteredVirtualMachines(ctx context.Context, moRefs
 	return toReturn, nil
 }
 
+// hasOrphanedDisks checks if a VM has any disks with 0GB capacity.
+// This is an indicator of orphaned/corrupted VMs that should be cleaned up.
+func hasOrphanedDisks(vm mo.VirtualMachine) bool {
+	if vm.Config == nil || vm.Config.Hardware.Device == nil {
+		return false
+	}
+
+	for _, device := range vm.Config.Hardware.Device {
+		if disk, ok := device.(*types.VirtualDisk); ok {
+			// Check if disk has 0 capacity (orphaned)
+			if disk.CapacityInKB == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // deleteVirtualMachinesByPortGroup removes VMs from lease port groups.
 // Only deletes VMs created before the lease to avoid removing cluster VMs.
+// Also identifies and deletes orphaned VMs with 0GB disks.
 func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, leaseName string) error {
 	var clusterId string
 	var ok bool
@@ -278,7 +297,27 @@ func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, 
 						return err
 					}
 					for _, vm := range vms {
+						shouldDelete := false
+						deleteReason := ""
+
+						// Delete if VM was created before the lease (existing orphan)
 						if vm.Config.CreateDate.Before(l.CreationTimestamp.Time) {
+							shouldDelete = true
+							deleteReason = "created before lease"
+						}
+
+						// Also delete if VM has orphaned disks (0GB capacity) and is powered off
+						if hasOrphanedDisks(vm) && vm.Runtime.PowerState == types.VirtualMachinePowerStatePoweredOff {
+							shouldDelete = true
+							if deleteReason != "" {
+								deleteReason += " and has orphaned disks"
+							} else {
+								deleteReason = "has orphaned 0GB disks"
+							}
+						}
+
+						if shouldDelete {
+							r.logger.Info("deleting orphaned VM", "name", vm.Name, "reason", deleteReason)
 							if err := r.deleteVirtualMachine(ctx, server, vm.Reference()); err != nil {
 								return err
 							}
