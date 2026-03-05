@@ -140,6 +140,7 @@ func (v *VSphereObjectReconciler) buildLogger() (*zap.Logger, error) {
 		cfg = zap.NewProductionConfig()
 	}
 	cfg.Level = zap.NewAtomicLevelAt(level)
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 
 	return cfg.Build()
 }
