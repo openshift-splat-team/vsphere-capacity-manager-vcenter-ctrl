@@ -34,6 +34,7 @@ import (
 	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -53,6 +54,12 @@ type LeaseReconciler struct {
 
 	leases  map[string]*v1.Lease
 	leaseMu sync.Mutex
+
+	// skipVMs tracks VMs that failed with "Invalid virtual machine state" to avoid
+	// retrying them on every reconcile. Key is the VM ManagedObjectReference value,
+	// value is the VM name for logging.
+	skipVMs   map[string]string
+	skipVMsMu sync.Mutex
 
 	logger logr.Logger
 }
@@ -273,10 +280,13 @@ func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, 
 		return fmt.Errorf("cluster id not found in lease")
 	}
 
+	var lastErr error
 	for server := range r.Metadata.VCenterCredentials {
 		v, err := r.Metadata.ContainerView(ctx, server)
 		if err != nil {
-			return err
+			r.logger.Error(err, "failed to create container view, continuing to next vCenter", "vcenter", server)
+			lastErr = err
+			continue
 		}
 		containerViews = append(containerViews, v)
 
@@ -287,14 +297,18 @@ func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, 
 				if strings.Contains(err.Error(), "object references is empty") {
 					continue
 				}
-				return err
+				r.logger.Error(err, "failed to retrieve networks, continuing to next vCenter", "vcenter", server, "port_group", portGroupName)
+				lastErr = err
+				continue
 			}
 
 			for _, n := range networks {
 				if len(n.Vm) > 0 {
 					vms, err := r.getFilteredVirtualMachines(ctx, n.Vm, server, clusterId)
 					if err != nil {
-						return err
+						r.logger.Error(err, "failed to get filtered VMs, continuing to next vCenter", "vcenter", server)
+						lastErr = err
+						continue
 					}
 					for _, vm := range vms {
 						shouldDelete := false
@@ -319,7 +333,9 @@ func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, 
 						if shouldDelete {
 							r.logger.Info("deleting orphaned VM", "name", vm.Name, "reason", deleteReason)
 							if err := r.deleteVirtualMachine(ctx, server, vm.Reference()); err != nil {
-								return err
+								r.logger.Error(err, "failed to delete VM, continuing", "vcenter", server, "vm_name", vm.Name)
+								lastErr = err
+								continue
 							}
 						}
 					}
@@ -331,12 +347,26 @@ func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, 
 		return err
 	}
 
+	if lastErr != nil {
+		return fmt.Errorf("VM cleanup by port group completed with errors (last: %w)", lastErr)
+	}
+
 	return nil
 }
 
 // deleteVirtualMachine powers off and destroys a VM.
 // Ensures VM is powered off before destruction.
+// VMs that previously failed with "Invalid virtual machine state" are skipped.
 func (r *LeaseReconciler) deleteVirtualMachine(ctx context.Context, server string, ref types.ManagedObjectReference) error {
+	// Check skip list first to avoid repeated attempts on VMs stuck in invalid state
+	r.skipVMsMu.Lock()
+	if name, skipped := r.skipVMs[ref.Value]; skipped {
+		r.skipVMsMu.Unlock()
+		r.logger.V(1).Info("skipping VM in invalid state", "name", name, "ref", ref.Value)
+		return nil
+	}
+	r.skipVMsMu.Unlock()
+
 	s, err := r.Metadata.Session(ctx, server)
 	if err != nil {
 		return err
@@ -367,6 +397,10 @@ func (r *LeaseReconciler) deleteVirtualMachine(ctx context.Context, server strin
 
 		switch {
 		case strings.Contains(err.Error(), "Invalid virtual machine state."):
+			r.skipVMsMu.Lock()
+			r.skipVMs[ref.Value] = objName
+			r.skipVMsMu.Unlock()
+			r.logger.Info("added VM to skip list due to invalid state - requires manual intervention in vCenter", "name", objName, "ref", ref.Value)
 			return nil
 		case strings.Contains(err.Error(), "Permission to perform this operation was denied"):
 			return nil
@@ -569,10 +603,17 @@ func (r *LeaseReconciler) deleteTagsByClusterId(ctx context.Context, leaseName s
 
 	r.logger.WithName("tags").Info("starting tag cleanup check", "lease_name", lease.Name)
 
+	var lastErr error
 	for server := range r.Metadata.VCenterCredentials {
 		if err := r.cleanupTagsOnServer(ctx, server, clusterId); err != nil {
-			return err
+			r.logger.Error(err, "failed to cleanup tags on server, continuing to next vCenter", "vcenter", server)
+			lastErr = err
+			continue
 		}
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("tag cleanup completed with errors (last: %w)", lastErr)
 	}
 
 	r.logger.WithName("tags").Info("completed tag cleanup check", "lease_name", lease.Name)
@@ -617,12 +658,19 @@ func (r *LeaseReconciler) cleanupTagsOnServer(ctx context.Context, server, clust
 // Configures logging and event filtering for lease resources.
 func (r *LeaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.leases = make(map[string]*v1.Lease)
-	zapLog, err := zap.NewProduction(zap.AddCaller())
+	r.skipVMs = make(map[string]string)
+
+	cfg := zap.NewProductionConfig()
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	zapLog, err := cfg.Build(zap.AddCaller())
 	if err != nil {
 		return err
 	}
 
 	r.logger = zapr.NewLogger(zapLog)
+
+	// Log the skip list every 8 hours so operators can see which VMs are stuck
+	go r.logSkippedVMs()
 
 	return ctrl.NewControllerManagedBy(mgr).For(&v1.Lease{}).WithEventFilter(predicate.Funcs{
 		CreateFunc:  func(createEvent event.CreateEvent) bool { return true },
@@ -630,4 +678,26 @@ func (r *LeaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		UpdateFunc:  func(updateEvent event.UpdateEvent) bool { return true },
 		GenericFunc: func(genericEvent event.GenericEvent) bool { return false },
 	}).Complete(r)
+}
+
+// logSkippedVMs periodically logs VMs that are in the skip list due to
+// "Invalid virtual machine state" errors. Runs every 8 hours.
+func (r *LeaseReconciler) logSkippedVMs() {
+	ticker := time.NewTicker(8 * time.Hour)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		r.skipVMsMu.Lock()
+		if len(r.skipVMs) > 0 {
+			names := make([]string, 0, len(r.skipVMs))
+			for _, name := range r.skipVMs {
+				names = append(names, name)
+			}
+			r.logger.WithName("skip-list").Info("VMs skipped due to invalid state - these require manual intervention in vCenter",
+				"count", len(r.skipVMs),
+				"vm_names", names,
+			)
+		}
+		r.skipVMsMu.Unlock()
+	}
 }
