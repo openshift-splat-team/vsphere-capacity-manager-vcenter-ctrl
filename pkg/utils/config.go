@@ -11,6 +11,9 @@ import (
 )
 
 // ProtectionConfig defines prefixes/patterns used to protect vSphere objects from cleanup.
+// Tags: tag name prefixes to protect from deletion.
+// Folders: exact folder names to protect from deletion.
+// ResourcePools: resource pool name prefixes to protect from deletion.
 type ProtectionConfig struct {
 	Tags          []string `json:"tags"`
 	Folders       []string `json:"folders"`
@@ -110,9 +113,9 @@ func (c *ControllerConfig) applyDefaults() {
 	if len(c.Protection.Folders) == 0 {
 		c.Protection.Folders = []string{"debug", "template"}
 	}
-	if len(c.Protection.ResourcePools) == 0 {
-		c.Protection.ResourcePools = []string{"ci-", "qeci-"}
-	}
+	// No default protection prefixes for resource pools.
+	// Target prefixes are hardcoded in DefaultResourcePoolTargetPrefixes.
+	// protection.resourcepools is used to PROTECT specific pools from deletion.
 
 	// Safety defaults
 	if c.Safety.MinAgeHours == 0 {

@@ -42,9 +42,10 @@ data:
       folders:
         - debug
         - template
+      # Resource pools matching these prefixes are protected from deletion,
+      # even if they match the built-in target prefixes (ci-, qeci-).
       resourcepools:
-        - ci-
-        - qeci-
+        - ipi-ci-clusters
 
     logging:
       level: info

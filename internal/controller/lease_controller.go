@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	"github.com/openshift-splat-team/vsphere-capacity-manager-vcenter-ctrl/pkg/utils"
 	"github.com/openshift-splat-team/vsphere-capacity-manager-vcenter-ctrl/pkg/vsphere"
 	v1 "github.com/openshift-splat-team/vsphere-capacity-manager/pkg/apis/vspherecapacitymanager.splat.io/v1"
 )
@@ -51,6 +52,8 @@ type LeaseReconciler struct {
 	Scheme *runtime.Scheme
 
 	*vsphere.Metadata
+
+	Protection utils.ProtectionConfig
 
 	leases  map[string]*v1.Lease
 	leaseMu sync.Mutex
@@ -556,6 +559,15 @@ func (r *LeaseReconciler) deleteByManagedEntity(ctx context.Context, managedEnti
 					r.logger.Error(err, "failed to delete managed entity", "entity", managedEntity.Name)
 					continue
 				}
+			}
+		case "ResourcePool":
+			if IsProtectedResourcePool(managedEntity.Name, r.Protection.ResourcePools) {
+				r.logger.WithName("deleteByManagedEntity").Info("skipping protected resource pool", "name", managedEntity.Name)
+				continue
+			}
+			if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {
+				r.logger.Error(err, "failed to destroy resource pool", "entity", managedEntity.Name)
+				continue
 			}
 		default:
 			if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {

@@ -94,6 +94,52 @@ var _ = Describe("Protection Helpers", func() {
 		It("returns false when prefix list is empty", func() {
 			Expect(IsTargetResourcePool("ci-12345", []string{})).To(BeFalse())
 		})
+
+		It("uses DefaultResourcePoolTargetPrefixes correctly", func() {
+			Expect(IsTargetResourcePool("ci-op-abc", DefaultResourcePoolTargetPrefixes)).To(BeTrue())
+			Expect(IsTargetResourcePool("qeci-xyz", DefaultResourcePoolTargetPrefixes)).To(BeTrue())
+			Expect(IsTargetResourcePool("ipi-ci-clusters", DefaultResourcePoolTargetPrefixes)).To(BeFalse())
+			Expect(IsTargetResourcePool("production", DefaultResourcePoolTargetPrefixes)).To(BeFalse())
+		})
+	})
+
+	Context("IsProtectedResourcePool", func() {
+		It("returns true when name matches a protected prefix", func() {
+			Expect(IsProtectedResourcePool("ipi-ci-clusters", []string{"ipi-"})).To(BeTrue())
+		})
+
+		It("returns true on exact match with prefix", func() {
+			Expect(IsProtectedResourcePool("ipi-ci-clusters", []string{"ipi-ci-clusters"})).To(BeTrue())
+		})
+
+		It("returns false when name does not match any protected prefix", func() {
+			Expect(IsProtectedResourcePool("ci-op-12345", []string{"ipi-", "management-"})).To(BeFalse())
+		})
+
+		It("returns false when protected list is empty", func() {
+			Expect(IsProtectedResourcePool("ipi-ci-clusters", []string{})).To(BeFalse())
+		})
+
+		It("returns false when name is empty", func() {
+			Expect(IsProtectedResourcePool("", []string{"ipi-"})).To(BeFalse())
+		})
+
+		It("matches against multiple prefixes", func() {
+			prefixes := []string{"ipi-", "management-", "prod-"}
+			Expect(IsProtectedResourcePool("ipi-ci-clusters", prefixes)).To(BeTrue())
+			Expect(IsProtectedResourcePool("management-pool", prefixes)).To(BeTrue())
+			Expect(IsProtectedResourcePool("prod-workloads", prefixes)).To(BeTrue())
+			Expect(IsProtectedResourcePool("ci-op-12345", prefixes)).To(BeFalse())
+		})
+
+		It("protects a resource pool that also matches target prefixes", func() {
+			// A pool starting with "ci-" is a target, but if it's also protected it should be skipped
+			targetPrefixes := DefaultResourcePoolTargetPrefixes
+			protectedPrefixes := []string{"ci-special-"}
+			rpName := "ci-special-pool"
+			Expect(IsTargetResourcePool(rpName, targetPrefixes)).To(BeTrue())
+			Expect(IsProtectedResourcePool(rpName, protectedPrefixes)).To(BeTrue())
+		})
 	})
 
 	Context("IsTargetStoragePolicy", func() {

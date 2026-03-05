@@ -5,6 +5,11 @@ import "strings"
 // DefaultFolderTargetPatterns are the default patterns used to identify CI/test folders.
 var DefaultFolderTargetPatterns = []string{"ci-", "user-", "build-"}
 
+// DefaultResourcePoolTargetPrefixes are the default prefixes used to identify CI/test resource pools
+// that are candidates for cleanup. Resource pools whose names start with these prefixes may be
+// deleted if they are empty and not explicitly protected via the protection config.
+var DefaultResourcePoolTargetPrefixes = []string{"ci-", "qeci-"}
+
 // IsProtectedTag returns true if tagName starts with any of the protected prefixes.
 func IsProtectedTag(tagName string, protectedPrefixes []string) bool {
 	for _, prefix := range protectedPrefixes {
@@ -38,6 +43,17 @@ func IsProtectedFolder(folderName string, protectedFolders []string) bool {
 // IsTargetResourcePool returns true if rpName starts with any of the target prefixes.
 func IsTargetResourcePool(rpName string, targetPrefixes []string) bool {
 	for _, prefix := range targetPrefixes {
+		if strings.HasPrefix(rpName, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsProtectedResourcePool returns true if rpName starts with any of the protected prefixes.
+// Protected resource pools are exempt from cleanup even if they match target prefixes.
+func IsProtectedResourcePool(rpName string, protectedPrefixes []string) bool {
+	for _, prefix := range protectedPrefixes {
 		if strings.HasPrefix(rpName, prefix) {
 			return true
 		}

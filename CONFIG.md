@@ -10,11 +10,15 @@ The controller performs two types of operations:
 
 ## ConfigMap Configuration
 
-A ConfigMap can be used to configure operational parameters (future implementation). See `config/samples/cleanup-config.yaml` for the template.
+The controller reads its configuration from a Kubernetes ConfigMap. See
+`config/samples/cleanup-config.yaml` for a complete template.
 
-### Current Hard-Coded Settings
+Configuration is parsed by `pkg/utils/config.go` (`ReadControllerConfig`) and loaded
+once at startup. Changes to the ConfigMap require a pod restart to take effect.
 
-The following settings are currently hard-coded in the controller but can be made configurable in future versions:
+### Configurable Settings
+
+The following settings are configured via the ConfigMap with sensible defaults:
 
 #### Cleanup Intervals
 
@@ -43,11 +47,29 @@ The following settings are currently hard-coded in the controller but can be mad
 
 #### Protected Resources
 
-| Resource Type | Protection Logic | Location |
-|--------------|------------------|----------|
-| Zonal tags | Tags starting with `us-` | `vsphere_object_controller.go:252` |
-| System folders | "debug" folder | `vsphere_object_controller.go` (via getFolderList) |
-| RHCOS VMs | VMs starting with `rhcos-` | `lease_controller.go:233` |
+All protection prefixes/names are configurable via the `protection` section of the
+ConfigMap. The controller uses a two-tier model for cleanup decisions:
+
+1. **Target patterns** (hardcoded): identify resources that are candidates for deletion
+2. **Protection lists** (from config): exempt specific resources from deletion, even if
+   they match a target pattern
+
+| Resource Type | Target Logic | Protection Config | Default Protection |
+|--------------|--------------|-------------------|--------------------|
+| Tags | Contains `ci-` | `protection.tags` (prefix match) | `["us-"]` |
+| Folders | Contains `ci-`, `user-`, `build-` | `protection.folders` (exact match) | `["debug", "template"]` |
+| Resource pools | Starts with `ci-`, `qeci-` | `protection.resourcepools` (prefix match) | none |
+| RHCOS VMs | N/A | Hardcoded `rhcos-` prefix skip | N/A |
+
+**Example:** A resource pool named `ci-special-pool` starts with `ci-` so it is a
+cleanup target. But if `protection.resourcepools` contains `ci-special-`, the pool
+will be protected and skipped.
+
+**Location in code:**
+- Target patterns: `internal/controller/protection.go` (`DefaultFolderTargetPatterns`, `DefaultResourcePoolTargetPrefixes`)
+- Protection helpers: `internal/controller/protection.go` (`IsProtectedTag`, `IsProtectedFolder`, `IsProtectedResourcePool`)
+- Scheduled cleanup: `internal/controller/vsphere_object_controller.go`
+- Lease-driven cleanup: `internal/controller/lease_controller.go` (`deleteByManagedEntity`)
 
 ## Cleanup Operations
 
@@ -93,14 +115,24 @@ The following settings are currently hard-coded in the controller but can be mad
 ### 4. Resource Pool Cleanup (`resourcepool()`)
 **Schedule:** Every 2 hours
 **Criteria:**
-- Resource pool name starts with `ci-` or `qeci-`
+- Resource pool name starts with a target prefix (`ci-` or `qeci-`, hardcoded in `DefaultResourcePoolTargetPrefixes`)
+- Resource pool is NOT in the `protection.resourcepools` list
 - Resource pool has zero VMs
+- Resource pool has been seen as empty for at least `min_age_hours` (default: 2 hours)
 
 **Safety:**
+- Two-tier targeting: must match a target prefix AND must not match a protection prefix
 - Only deletes empty pools
 - Uses property collector to verify VM count
+- Minimum age check prevents deleting pools that were only briefly empty
+- Dry-run mode support via `features.dry_run`
 
-**Code:** `vsphere_object_controller.go:315-393`
+**Lease-driven cleanup:**
+When a Lease is deleted, the `LeaseReconciler` searches for all managed entities matching
+the cluster ID. Resource pools found this way are checked against `protection.resourcepools`
+before deletion. Protected pools are skipped with a log message.
+
+**Code:** `vsphere_object_controller.go` (`resourcepool` function), `lease_controller.go` (`deleteByManagedEntity`)
 
 ### 5. Storage Policy Cleanup (`storagepolicy()`)
 **Schedule:** Every 12 hours
@@ -167,9 +199,27 @@ The following settings are currently hard-coded in the controller but can be mad
    - Deletion reasons logged for audit trail
    - Success and failure states clearly indicated
 
-### Future Enhancements (Not Yet Implemented)
+### Implemented Safety Features
 
-The following safety features are planned but not yet implemented:
+1. **Dry-Run Mode** (`features.dry_run: true`)
+   - Logs what would be deleted with `[DRY RUN]` prefix without actually deleting
+   - Available for all scheduled cleanup operations
+   - Enabled via the `features` section of the ConfigMap
+
+2. **Minimum Age Requirements** (`safety.min_age_hours`)
+   - Configurable minimum age (default: 2 hours) for scheduled cleanup targets
+   - Resources must be seen as deletion candidates for at least this long before
+     they are actually deleted
+   - Kubevols have a separate `safety.kubevols_min_age_days` threshold (default: 21 days)
+
+3. **Grace Periods** (`safety.grace_period_hours`)
+   - Configurable grace period (default: 12 hours) after cluster deletion
+
+4. **Configurable Protection Lists**
+   - Tags, folders, and resource pools can be protected via the `protection` section
+   - See "Protected Resources" above for details
+
+### Future Enhancements (Not Yet Implemented)
 
 1. **Circuit Breaker**
    - Maximum deletions per run (e.g., 100)
@@ -181,21 +231,6 @@ The following safety features are planned but not yet implemented:
    - Confirm after waiting period
    - Execute deletion
    - Provides time for manual intervention
-
-3. **Dry-Run Mode**
-   - Log what would be deleted without actually deleting
-   - Test cleanup logic safely
-   - Validate before production deployment
-
-4. **Minimum Age Requirements**
-   - Configurable minimum age for all resources
-   - Additional buffer beyond lease lifecycle
-   - Currently only implemented for kubevols (21 days)
-
-5. **Grace Periods**
-   - Time window after cluster deletion before resource cleanup
-   - Allows for manual recovery if needed
-   - Currently not implemented
 
 ## Deployment Configuration
 
@@ -239,50 +274,75 @@ Currently, the controller exposes standard controller-runtime metrics. Future en
 - `vsphere_cleanup_duration_seconds{operation}` - Histogram of cleanup durations
 - `vsphere_cleanup_errors_total{operation}` - Counter of cleanup errors
 
-## Future Configuration Implementation
+## Configuration Reference
 
-To implement ConfigMap-based configuration:
+### Protection Section
 
-1. **Add ConfigMap mounting** in deployment:
 ```yaml
-volumeMounts:
-- name: config
-  mountPath: /etc/vsphere-cleanup
-volumes:
-- name: config
-  configMap:
-    name: vsphere-cleanup-config
+protection:
+  # Tag name prefixes to protect from deletion (prefix match).
+  # Tags whose names start with any of these prefixes will be skipped.
+  # Default: ["us-"]
+  tags:
+    - us-east
+    - us-west
+
+  # Folder names to protect from deletion (exact match).
+  # Folders whose names exactly match any of these will be skipped.
+  # Default: ["debug", "template"]
+  folders:
+    - debug
+    - template
+    - management
+
+  # Resource pool name prefixes to protect from deletion (prefix match).
+  # Resource pools whose names start with any of these prefixes will be
+  # skipped, even if they match the built-in target prefixes (ci-, qeci-).
+  # Default: [] (no pools protected by default)
+  resourcepools:
+    - ipi-ci-clusters
+    - management-
 ```
 
-2. **Update controller code** to read config:
-```go
-// Add to main.go or controller setup
-import "github.com/spf13/viper"
+### Features Section
 
-viper.SetConfigName("cleanup-config")
-viper.AddConfigPath("/etc/vsphere-cleanup")
-viper.AutomaticEnv()
+```yaml
+features:
+  # When true, log what would be deleted without actually deleting.
+  dry_run: false
 
-// Read intervals
-folderInterval := viper.GetDuration("cleanup.intervals.folders")
+  # Enable/disable individual cleanup operations.
+  # If all flags are omitted, all operations are enabled by default.
+  enable_folders: true
+  enable_tags: true
+  enable_cnsvolumes: true
+  enable_resourcepools: true
+  enable_storagepolicies: true
+  enable_kubevols: true
 ```
 
-3. **Apply configuration** to pruneFunctions:
-```go
-pf := []pruneFunctions{
-    {
-        name:    "folders",
-        execute: v.folder,
-        delay:   config.GetDuration("cleanup.intervals.folders"),
-        lastRun: time.Now(),
-    },
-    // ...
-}
+### Safety Section
+
+```yaml
+safety:
+  # Minimum hours a resource must be seen as a deletion candidate before
+  # it is actually deleted. Default: 2
+  min_age_hours: 2
+
+  # Grace period in hours after cluster deletion. Default: 12
+  grace_period_hours: 12
+
+  # Minimum age in days for kubevol VMDK files before deletion. Default: 21
+  kubevols_min_age_days: 21
 ```
 
 ## References
 
 - Main controller: `internal/controller/vsphere_object_controller.go`
 - Lease reconciler: `internal/controller/lease_controller.go`
+- Protection helpers: `internal/controller/protection.go`
+- Config parsing: `pkg/utils/config.go`
+- Sample config: `config/samples/cleanup-config.yaml`
+- Changelog: `CHANGELOG.md`
 - Implementation plan: `IMPLEMENTATION_PLAN.md`
 - Deployment: `deploy.yaml`
