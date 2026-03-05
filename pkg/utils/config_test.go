@@ -53,8 +53,8 @@ func TestControllerConfig_ApplyDefaults(t *testing.T) {
 	if len(config.Protection.Folders) != 2 || config.Protection.Folders[0] != "debug" {
 		t.Errorf("expected default folders [debug, template], got %v", config.Protection.Folders)
 	}
-	if len(config.Protection.ResourcePools) != 2 || config.Protection.ResourcePools[0] != "ci-" {
-		t.Errorf("expected default resourcepools [ci-, qeci-], got %v", config.Protection.ResourcePools)
+	if len(config.Protection.ResourcePools) != 0 {
+		t.Errorf("expected default resourcepools to be empty (no defaults), got %v", config.Protection.ResourcePools)
 	}
 	if config.Safety.KubevolsMinAgeDays != 21 {
 		t.Errorf("expected default kubevols_min_age_days 21, got %d", config.Safety.KubevolsMinAgeDays)
@@ -82,12 +82,12 @@ safety:
 	if len(config.Protection.Tags) != 1 || config.Protection.Tags[0] != "eu-" {
 		t.Errorf("expected tags [eu-], got %v", config.Protection.Tags)
 	}
-	// Folders and ResourcePools should get defaults since they weren't set
+	// Folders should get defaults since they weren't set; ResourcePools has no defaults
 	if len(config.Protection.Folders) != 2 || config.Protection.Folders[0] != "debug" {
 		t.Errorf("expected default folders [debug, template], got %v", config.Protection.Folders)
 	}
-	if len(config.Protection.ResourcePools) != 2 || config.Protection.ResourcePools[0] != "ci-" {
-		t.Errorf("expected default resourcepools [ci-, qeci-], got %v", config.Protection.ResourcePools)
+	if len(config.Protection.ResourcePools) != 0 {
+		t.Errorf("expected default resourcepools to be empty (no defaults), got %v", config.Protection.ResourcePools)
 	}
 	// Safety should keep the override
 	if config.Safety.KubevolsMinAgeDays != 14 {

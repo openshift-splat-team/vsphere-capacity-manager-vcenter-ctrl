@@ -156,9 +156,10 @@ func main() {
 	}
 
 	if err = (&controller.LeaseReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Metadata: metadata,
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Metadata:   metadata,
+		Protection: controllerConfig.Protection,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lease")
 		os.Exit(1)

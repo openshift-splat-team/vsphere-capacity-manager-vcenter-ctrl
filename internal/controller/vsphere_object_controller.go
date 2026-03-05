@@ -463,7 +463,13 @@ func (v *VSphereObjectReconciler) resourcepool(ctx context.Context) error {
 				rpName := rp.Name()
 
 				// Only process resource pools matching target prefixes
-				if !IsTargetResourcePool(rpName, v.Protection.ResourcePools) {
+				if !IsTargetResourcePool(rpName, DefaultResourcePoolTargetPrefixes) {
+					continue
+				}
+
+				// Skip resource pools that are explicitly protected
+				if IsProtectedResourcePool(rpName, v.Protection.ResourcePools) {
+					v.logger.WithName("resourcepool").Info("skipping protected resource pool", "name", rpName)
 					continue
 				}
 
