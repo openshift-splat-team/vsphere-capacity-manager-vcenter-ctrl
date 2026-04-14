@@ -142,6 +142,32 @@ var _ = Describe("Protection Helpers", func() {
 		})
 	})
 
+	Context("IsProtectedVirtualMachine", func() {
+		It("returns true when VM name matches a protected prefix", func() {
+			Expect(IsProtectedVirtualMachine("kea-dhcp-server1", []string{"kea-dhcp-"})).To(BeTrue())
+		})
+
+		It("returns false when VM name does not match any prefix", func() {
+			Expect(IsProtectedVirtualMachine("ci-test-vm", []string{"kea-dhcp-"})).To(BeFalse())
+		})
+
+		It("returns false when prefix list is empty", func() {
+			Expect(IsProtectedVirtualMachine("kea-dhcp-server1", []string{})).To(BeFalse())
+		})
+
+		It("returns false when VM name is empty", func() {
+			Expect(IsProtectedVirtualMachine("", []string{"kea-dhcp-"})).To(BeFalse())
+		})
+
+		It("matches against multiple prefixes", func() {
+			prefixes := []string{"kea-dhcp-", "infra-", "bastion-"}
+			Expect(IsProtectedVirtualMachine("kea-dhcp-server1", prefixes)).To(BeTrue())
+			Expect(IsProtectedVirtualMachine("infra-dns", prefixes)).To(BeTrue())
+			Expect(IsProtectedVirtualMachine("bastion-host", prefixes)).To(BeTrue())
+			Expect(IsProtectedVirtualMachine("ci-test-vm", prefixes)).To(BeFalse())
+		})
+	})
+
 	Context("IsTargetStoragePolicy", func() {
 		It("returns true when policy name has the prefix", func() {
 			Expect(IsTargetStoragePolicy("openshift-storage-policy-ci-123", "openshift-storage-policy-")).To(BeTrue())

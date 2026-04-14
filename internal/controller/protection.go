@@ -61,6 +61,17 @@ func IsProtectedResourcePool(rpName string, protectedPrefixes []string) bool {
 	return false
 }
 
+// IsProtectedVirtualMachine returns true if vmName starts with any of the protected prefixes.
+// Protected VMs are exempt from cleanup during port group deletion.
+func IsProtectedVirtualMachine(vmName string, protectedPrefixes []string) bool {
+	for _, prefix := range protectedPrefixes {
+		if strings.HasPrefix(vmName, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsTargetStoragePolicy returns true if policyName starts with the given prefix.
 func IsTargetStoragePolicy(policyName string, prefix string) bool {
 	return strings.HasPrefix(policyName, prefix)

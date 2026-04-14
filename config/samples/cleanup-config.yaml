@@ -46,6 +46,10 @@ data:
       # even if they match the built-in target prefixes (ci-, qeci-).
       resourcepools:
         - ipi-ci-clusters
+      # Virtual machines matching these prefixes are protected from deletion
+      # during port group cleanup.
+      virtualmachines:
+        - kea-dhcp-
 
     logging:
       level: info

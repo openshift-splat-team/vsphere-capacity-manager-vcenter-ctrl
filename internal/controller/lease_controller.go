@@ -242,6 +242,8 @@ func (r *LeaseReconciler) getFilteredVirtualMachines(ctx context.Context, moRefs
 			continue
 		case strings.HasPrefix(vm.Name, "rhcos-"):
 			continue
+		case IsProtectedVirtualMachine(vm.Name, r.Protection.VirtualMachines):
+			continue
 		}
 		toReturn = append(toReturn, vm)
 	}
