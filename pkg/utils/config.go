@@ -15,9 +15,10 @@ import (
 // Folders: exact folder names to protect from deletion.
 // ResourcePools: resource pool name prefixes to protect from deletion.
 type ProtectionConfig struct {
-	Tags          []string `json:"tags"`
-	Folders       []string `json:"folders"`
-	ResourcePools []string `json:"resourcepools"`
+	Tags            []string `json:"tags"`
+	Folders         []string `json:"folders"`
+	ResourcePools   []string `json:"resourcepools"`
+	VirtualMachines []string `json:"virtualmachines"`
 }
 
 // SafetyConfig defines safety thresholds for cleanup operations.

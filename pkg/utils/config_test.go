@@ -21,6 +21,9 @@ protection:
   resourcepools:
     - dev-
     - qa-
+  virtualmachines:
+    - kea-dhcp-
+    - bastion-
 safety:
   kubevols_min_age_days: 30
 `
@@ -37,6 +40,9 @@ safety:
 	}
 	if len(config.Protection.ResourcePools) != 2 || config.Protection.ResourcePools[0] != "dev-" {
 		t.Errorf("expected resourcepools [dev-, qa-], got %v", config.Protection.ResourcePools)
+	}
+	if len(config.Protection.VirtualMachines) != 2 || config.Protection.VirtualMachines[0] != "kea-dhcp-" {
+		t.Errorf("expected virtualmachines [kea-dhcp-, bastion-], got %v", config.Protection.VirtualMachines)
 	}
 	if config.Safety.KubevolsMinAgeDays != 30 {
 		t.Errorf("expected kubevols_min_age_days 30, got %d", config.Safety.KubevolsMinAgeDays)
@@ -55,6 +61,9 @@ func TestControllerConfig_ApplyDefaults(t *testing.T) {
 	}
 	if len(config.Protection.ResourcePools) != 0 {
 		t.Errorf("expected default resourcepools to be empty (no defaults), got %v", config.Protection.ResourcePools)
+	}
+	if len(config.Protection.VirtualMachines) != 0 {
+		t.Errorf("expected default virtualmachines to be empty (no defaults), got %v", config.Protection.VirtualMachines)
 	}
 	if config.Safety.KubevolsMinAgeDays != 21 {
 		t.Errorf("expected default kubevols_min_age_days 21, got %d", config.Safety.KubevolsMinAgeDays)
