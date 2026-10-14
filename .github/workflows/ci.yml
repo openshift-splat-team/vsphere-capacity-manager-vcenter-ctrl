@@ -45,6 +45,7 @@ jobs:
         run: |
           go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0
           $(go env GOPATH)/bin/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+          ls -la config/crd/bases/
 
       # envtest provides etcd and a kube-apiserver, vcsim (govmomi
       # simulator) provides the vCenter endpoints in-process.
