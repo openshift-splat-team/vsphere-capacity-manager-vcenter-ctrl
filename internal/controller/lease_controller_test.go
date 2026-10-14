@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	configv1 "github.com/openshift/api/config/v1"
@@ -337,9 +338,11 @@ var _ = Describe("Lease Controller", func() {
 		It("should handle lease with networks", func() {
 			lease := &v1.Lease{
 				Status: v1.LeaseStatus{
-					VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{
-						Topology: configv1.VSpherePlatformTopology{
-							Networks: []string{"test-network-1", "test-network-2"},
+					FailureDomainSpec: v1.FailureDomainSpec{
+						VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{
+							Topology: configv1.VSpherePlatformTopology{
+								Networks: []string{"test-network-1", "test-network-2"},
+							},
 						},
 					},
 				},
@@ -353,9 +356,11 @@ var _ = Describe("Lease Controller", func() {
 		It("should handle lease with no networks", func() {
 			lease := &v1.Lease{
 				Status: v1.LeaseStatus{
-					VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{
-						Topology: configv1.VSpherePlatformTopology{
-							Networks: []string{},
+					FailureDomainSpec: v1.FailureDomainSpec{
+						VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{
+							Topology: configv1.VSpherePlatformTopology{
+								Networks: []string{},
+							},
 						},
 					},
 				},
@@ -397,6 +402,132 @@ var _ = Describe("Lease Controller", func() {
 			}
 
 			_, exists := lease.ObjectMeta.Labels["cluster-id"]
+			Expect(exists).To(BeFalse())
+		})
+	})
+
+	Context("Deletion cleanup for leases without a usable cluster-id", func() {
+		var req ctrl.Request
+
+		leaseWithoutUsableClusterID := func(labels map[string]string) *v1.Lease {
+			return &v1.Lease{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deleted-lease",
+					Namespace: "default",
+					Labels:    labels,
+				},
+				Status: v1.LeaseStatus{
+					Phase: v1.PHASE_FULFILLED,
+				},
+			}
+		}
+
+		BeforeEach(func() {
+			// The lease was deleted from the cluster: the envtest API server
+			// returns NotFound for it, driving the deletion cleanup path.
+			reconciler.Client = k8sClient
+			reconciler.logger = logr.Discard()
+
+			req = ctrl.Request{NamespacedName: k8stypes.NamespacedName{Name: "deleted-lease", Namespace: "default"}}
+		})
+
+		It("should evict a cached lease with no cluster-id label and stop reconciling", func() {
+			reconciler.leaseMu.Lock()
+			reconciler.leases["deleted-lease"] = leaseWithoutUsableClusterID(nil)
+			reconciler.leaseMu.Unlock()
+
+			_, err := reconciler.Reconcile(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred(), "a cached lease without cluster-id must not error into a permanent retry loop")
+
+			reconciler.leaseMu.Lock()
+			_, exists := reconciler.leases["deleted-lease"]
+			reconciler.leaseMu.Unlock()
+			Expect(exists).To(BeFalse(), "the unprocessable lease must be evicted from the cache")
+
+			// Second reconcile is a no-op: no error, nothing left to clean up.
+			_, err = reconciler.Reconcile(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should treat an empty cluster-id label as unusable", func() {
+			reconciler.leaseMu.Lock()
+			reconciler.leases["deleted-lease"] = leaseWithoutUsableClusterID(map[string]string{"cluster-id": ""})
+			reconciler.leaseMu.Unlock()
+
+			// The helper must refuse an empty id before iterating vCenters: an empty
+			// cluster id would strings.Contains-match every tag category.
+			err := reconciler.deleteTagsByClusterId(context.Background(), "deleted-lease")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("cluster id not found"))
+
+			// And Reconcile must evict the lease and return no error instead of retrying.
+			_, err = reconciler.Reconcile(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+
+			reconciler.leaseMu.Lock()
+			_, exists := reconciler.leases["deleted-lease"]
+			reconciler.leaseMu.Unlock()
+			Expect(exists).To(BeFalse(), "the unprocessable lease must be evicted from the cache")
+		})
+	})
+
+	Context("Fulfilled lease cache refresh", func() {
+		It("should refresh the cached snapshot when a late cluster-id is added to a fulfilled lease", func() {
+			reconciler.Client = k8sClient
+			reconciler.logger = logr.Discard()
+
+			fulfilledStatus := v1.LeaseStatus{
+				Phase: v1.PHASE_FULFILLED,
+				FailureDomainSpec: v1.FailureDomainSpec{
+					VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{
+						Name:   "fd1",
+						Region: "us-east",
+						Zone:   "us-east-1",
+						Server: "vcenter.example.com",
+						Topology: configv1.VSpherePlatformTopology{
+							ComputeCluster: "/c1/host/cluster1",
+							Datastore:      "/c1/datastore/ds1",
+							Networks:       []string{"network-1"},
+						},
+					},
+				},
+			}
+			lease := &v1.Lease{
+				ObjectMeta: metav1.ObjectMeta{Name: "refresh-lease", Namespace: "default"},
+				Status:     fulfilledStatus,
+			}
+			Expect(k8sClient.Create(context.Background(), lease)).To(Succeed())
+			// Create's response strips status (it is a subresource); re-apply it.
+			lease.Status = fulfilledStatus
+			Expect(k8sClient.Status().Update(context.Background(), lease)).To(Succeed())
+
+			req := ctrl.Request{NamespacedName: k8stypes.NamespacedName{Name: "refresh-lease", Namespace: "default"}}
+
+			// First reconcile caches the fulfilled lease without a cluster-id;
+			// its leak check fails once (the retry goes quiet once cached).
+			_, err := reconciler.Reconcile(context.Background(), req)
+			Expect(err).To(HaveOccurred())
+			Expect(reconciler.deleteTagsByClusterId(context.Background(), "refresh-lease")).To(HaveOccurred())
+
+			// The creator adds the cluster-id label after fulfillment.
+			lease.Labels = map[string]string{"cluster-id": "late-cluster-id"}
+			Expect(k8sClient.Update(context.Background(), lease)).To(Succeed())
+
+			// The next reconcile must refresh the cached snapshot so the late
+			// label is visible to cleanup instead of the stale pre-label copy.
+			_, err = reconciler.Reconcile(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reconciler.deleteTagsByClusterId(context.Background(), "refresh-lease")).To(Succeed(),
+				"a late-added cluster-id must be visible in the cached snapshot")
+
+			// Deletion then takes the processable path: no error, lease evicted.
+			Expect(k8sClient.Delete(context.Background(), lease)).To(Succeed())
+			_, err = reconciler.Reconcile(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+
+			reconciler.leaseMu.Lock()
+			_, exists := reconciler.leases["refresh-lease"]
+			reconciler.leaseMu.Unlock()
 			Expect(exists).To(BeFalse())
 		})
 	})

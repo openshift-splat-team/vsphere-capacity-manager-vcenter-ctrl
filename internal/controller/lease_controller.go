@@ -94,10 +94,18 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			r.logger.WithName("leases").Error(err, "lease not found in cache", "name", req.Name)
 		} else {
 
-			var clusterId string
-			var ok bool
-			if clusterId, ok = l.Labels["cluster-id"]; !ok {
-				r.logger.WithName("leases").Error(err, "cluster id not found in cached lease", "name", l.Name)
+			clusterId, ok := l.Labels["cluster-id"]
+			if !ok || clusterId == "" {
+				// The API object is deleted and this cached snapshot is all that
+				// remains, so an unusable cluster id can never be recovered: evict
+				// rather than error into a permanent retry loop. An empty id would
+				// also strings.Contains-match every tag category in cleanupTagsOnServer.
+				r.logger.WithName("leases").Error(fmt.Errorf("lease %s has no usable cluster-id label", l.Name),
+					"cluster id not found in cached lease, evicting without vSphere cleanup", "name", l.Name)
+				r.leaseMu.Lock()
+				delete(r.leases, req.Name)
+				r.leaseMu.Unlock()
+				return ctrl.Result{}, nil
 			}
 
 			r.logger.WithName("leases").Info("lease found in cache, starting cleanup process", "name", l.Name, "creation_timestamp", l.CreationTimestamp.Format(time.RFC3339))
@@ -140,18 +148,21 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// cache lease once its been fulfilled
 	if reconciledLease.Status.Phase == v1.PHASE_FULFILLED {
-		var ok bool
 		r.logger.WithName("leases").Info("processing fulfilled lease", "phase", reconciledLease.Status.Phase)
 
 		r.leaseMu.Lock()
-		if _, ok = r.leases[reconciledLease.Name]; !ok {
+		_, wasCached := r.leases[reconciledLease.Name]
+		// Refresh the snapshot on every reconcile so labels added after the lease
+		// was first cached (e.g. a late cluster-id) are visible to cleanup when
+		// the lease is eventually deleted.
+		r.leases[reconciledLease.Name] = &reconciledLease
+		if !wasCached {
 			r.logger.WithName("leases").Info("caching fulfilled lease for monitoring", "name", reconciledLease.Name, "creation_timestamp", reconciledLease.CreationTimestamp.Format(time.RFC3339))
-			r.leases[reconciledLease.Name] = &reconciledLease
 		}
 		r.leaseMu.Unlock()
 
-		// only add cache and check for leaking once
-		if !ok {
+		// only check for leaking once, when the lease is newly cached
+		if !wasCached {
 			r.logger.WithName("monitoring").Info("starting leak detection for fulfilled lease", "lease_name", reconciledLease.Name)
 
 			// Is there _any_ *soap* based objects that exist in any vCenter based on the cluster id
@@ -281,7 +292,7 @@ func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, 
 		return err
 	}
 
-	if clusterId, ok = l.Labels["cluster-id"]; !ok {
+	if clusterId, ok = l.Labels["cluster-id"]; !ok || clusterId == "" {
 		return fmt.Errorf("cluster id not found in lease")
 	}
 
@@ -439,7 +450,7 @@ func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, lea
 		return nil, err
 	}
 
-	if clusterId, ok = l.Labels["cluster-id"]; !ok {
+	if clusterId, ok = l.Labels["cluster-id"]; !ok || clusterId == "" {
 		return nil, fmt.Errorf("cluster id %s not found in lease", clusterId)
 	}
 
@@ -611,7 +622,7 @@ func (r *LeaseReconciler) deleteTagsByClusterId(ctx context.Context, leaseName s
 	if err != nil {
 		return err
 	}
-	if clusterId, ok = lease.ObjectMeta.Labels["cluster-id"]; !ok {
+	if clusterId, ok = lease.ObjectMeta.Labels["cluster-id"]; !ok || clusterId == "" {
 		return fmt.Errorf("cluster id not found in lease")
 	}
 
