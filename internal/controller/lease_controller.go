@@ -488,18 +488,21 @@ func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, lea
 			continue
 		}
 
-		if err := v.RetrieveWithFilter(ctx, []string{"ManagedEntity"}, nil, &entities, property.Match{"name": fmt.Sprintf("%s*", clusterId)}); err != nil {
-			if strings.Contains(err.Error(), "object references is empty") {
+		retrieveErr := v.RetrieveWithFilter(ctx, []string{"ManagedEntity"}, nil, &entities, property.Match{"name": fmt.Sprintf("%s*", clusterId)})
+		// Destroy the view as soon as the retrieval returns so it is not
+		// leaked on the error paths below; a failed destroy only orphaning
+		// a transient view must not discard the retrieved entities.
+		if destroyErr := r.Metadata.DestroyContainerViews(ctx, []*view.ContainerView{v}); destroyErr != nil {
+			r.logger.Error(destroyErr, "failed to destroy container view, continuing to next vCenter", "vcenter", server)
+		}
+		if retrieveErr != nil {
+			if strings.Contains(retrieveErr.Error(), "object references is empty") {
 				// no matches on this server
 				continue
 			}
-			r.logger.Error(err, "failed to retrieve managed entities, continuing to next vCenter", "vcenter", server)
-			lastErr = err
+			r.logger.Error(retrieveErr, "failed to retrieve managed entities, continuing to next vCenter", "vcenter", server)
+			lastErr = retrieveErr
 			continue
-		}
-
-		if err := r.Metadata.DestroyContainerViews(ctx, []*view.ContainerView{v}); err != nil {
-			return nil, err
 		}
 
 		if len(entities) > 0 {
