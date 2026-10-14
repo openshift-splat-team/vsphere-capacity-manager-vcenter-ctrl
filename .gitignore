@@ -26,3 +26,6 @@ go.work
 *.swp
 *.swo
 *~
+
+# local agentic-qe tooling state (witness keys, memory db, logs)
+.agentic-qe/
