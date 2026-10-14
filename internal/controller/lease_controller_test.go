@@ -177,11 +177,11 @@ var _ = Describe("Lease Controller", func() {
 
 		It("should add lease to cache", func() {
 			reconciler.leaseMu.Lock()
-			reconciler.leases["test-lease"] = lease
+			reconciler.leases["default/test-lease"] = lease
 			reconciler.leaseMu.Unlock()
 
 			reconciler.leaseMu.Lock()
-			cachedLease, exists := reconciler.leases["test-lease"]
+			cachedLease, exists := reconciler.leases["default/test-lease"]
 			reconciler.leaseMu.Unlock()
 
 			Expect(exists).To(BeTrue())
@@ -191,16 +191,16 @@ var _ = Describe("Lease Controller", func() {
 		It("should remove lease from cache", func() {
 			// Add lease to cache
 			reconciler.leaseMu.Lock()
-			reconciler.leases["test-lease"] = lease
+			reconciler.leases["default/test-lease"] = lease
 			reconciler.leaseMu.Unlock()
 
 			// Remove lease from cache
 			reconciler.leaseMu.Lock()
-			delete(reconciler.leases, "test-lease")
+			delete(reconciler.leases, "default/test-lease")
 			reconciler.leaseMu.Unlock()
 
 			reconciler.leaseMu.Lock()
-			_, exists := reconciler.leases["test-lease"]
+			_, exists := reconciler.leases["default/test-lease"]
 			reconciler.leaseMu.Unlock()
 
 			Expect(exists).To(BeFalse())
@@ -216,7 +216,7 @@ var _ = Describe("Lease Controller", func() {
 			go func() {
 				defer GinkgoRecover()
 				reconciler.leaseMu.Lock()
-				reconciler.leases["test-lease"] = lease
+				reconciler.leases["default/test-lease"] = lease
 				reconciler.leaseMu.Unlock()
 				writeDone <- true
 			}()
@@ -228,7 +228,7 @@ var _ = Describe("Lease Controller", func() {
 			go func() {
 				defer GinkgoRecover()
 				reconciler.leaseMu.Lock()
-				_, exists = reconciler.leases["test-lease"]
+				_, exists = reconciler.leases["default/test-lease"]
 				reconciler.leaseMu.Unlock()
 				readDone <- true
 			}()
@@ -406,6 +406,28 @@ var _ = Describe("Lease Controller", func() {
 		})
 	})
 
+	Context("Lease server resolution", func() {
+		It("should return the distinct servers from PoolInfo", func() {
+			lease := &v1.Lease{Status: v1.LeaseStatus{
+				FailureDomainSpec: v1.FailureDomainSpec{VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{Server: "vc1.example.com"}},
+				PoolInfo: []v1.FailureDomainSpec{
+					{VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{Server: "vc1.example.com"}},
+					{VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{Server: "vc2.example.com"}},
+					{VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{Server: "vc2.example.com"}},
+					{VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{Server: ""}},
+				},
+			}}
+			Expect(leaseServers(lease)).To(Equal([]string{"vc1.example.com", "vc2.example.com"}))
+		})
+
+		It("should fall back to the inline server for leases without PoolInfo servers", func() {
+			lease := &v1.Lease{Status: v1.LeaseStatus{
+				FailureDomainSpec: v1.FailureDomainSpec{VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{Server: "vc1.example.com"}},
+			}}
+			Expect(leaseServers(lease)).To(Equal([]string{"vc1.example.com"}))
+		})
+	})
+
 	Context("Deletion cleanup for leases without a usable cluster-id", func() {
 		var req ctrl.Request
 
@@ -433,14 +455,14 @@ var _ = Describe("Lease Controller", func() {
 
 		It("should evict a cached lease with no cluster-id label and stop reconciling", func() {
 			reconciler.leaseMu.Lock()
-			reconciler.leases["deleted-lease"] = leaseWithoutUsableClusterID(nil)
+			reconciler.leases["default/deleted-lease"] = leaseWithoutUsableClusterID(nil)
 			reconciler.leaseMu.Unlock()
 
 			_, err := reconciler.Reconcile(context.Background(), req)
 			Expect(err).NotTo(HaveOccurred(), "a cached lease without cluster-id must not error into a permanent retry loop")
 
 			reconciler.leaseMu.Lock()
-			_, exists := reconciler.leases["deleted-lease"]
+			_, exists := reconciler.leases["default/deleted-lease"]
 			reconciler.leaseMu.Unlock()
 			Expect(exists).To(BeFalse(), "the unprocessable lease must be evicted from the cache")
 
@@ -449,14 +471,33 @@ var _ = Describe("Lease Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		It("should evict only the requested namespace's snapshot when two namespaces share a lease name", func() {
+			otherLease := leaseWithoutUsableClusterID(nil)
+			otherLease.Namespace = "other-namespace"
+			reconciler.leaseMu.Lock()
+			reconciler.leases["default/deleted-lease"] = leaseWithoutUsableClusterID(nil)
+			reconciler.leases["other-namespace/deleted-lease"] = otherLease
+			reconciler.leaseMu.Unlock()
+
+			_, err := reconciler.Reconcile(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+
+			reconciler.leaseMu.Lock()
+			_, defaultExists := reconciler.leases["default/deleted-lease"]
+			_, otherExists := reconciler.leases["other-namespace/deleted-lease"]
+			reconciler.leaseMu.Unlock()
+			Expect(defaultExists).To(BeFalse())
+			Expect(otherExists).To(BeTrue(), "the same-named lease in another namespace must keep its own snapshot")
+		})
+
 		It("should treat an empty cluster-id label as unusable", func() {
 			reconciler.leaseMu.Lock()
-			reconciler.leases["deleted-lease"] = leaseWithoutUsableClusterID(map[string]string{"cluster-id": ""})
+			reconciler.leases["default/deleted-lease"] = leaseWithoutUsableClusterID(map[string]string{"cluster-id": ""})
 			reconciler.leaseMu.Unlock()
 
 			// The helper must refuse an empty id before iterating vCenters: an empty
 			// cluster id would strings.Contains-match every tag category.
-			err := reconciler.deleteTagsByClusterId(context.Background(), "deleted-lease")
+			err := reconciler.deleteTagsByClusterId(context.Background(), "default/deleted-lease")
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("cluster id not found"))
 
@@ -465,7 +506,7 @@ var _ = Describe("Lease Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			reconciler.leaseMu.Lock()
-			_, exists := reconciler.leases["deleted-lease"]
+			_, exists := reconciler.leases["default/deleted-lease"]
 			reconciler.leaseMu.Unlock()
 			Expect(exists).To(BeFalse(), "the unprocessable lease must be evicted from the cache")
 		})
@@ -507,7 +548,7 @@ var _ = Describe("Lease Controller", func() {
 			// its leak check fails once (the retry goes quiet once cached).
 			_, err := reconciler.Reconcile(context.Background(), req)
 			Expect(err).To(HaveOccurred())
-			Expect(reconciler.deleteTagsByClusterId(context.Background(), "refresh-lease")).To(HaveOccurred())
+			Expect(reconciler.deleteTagsByClusterId(context.Background(), "default/refresh-lease")).To(HaveOccurred())
 
 			// The creator adds the cluster-id label after fulfillment.
 			lease.Labels = map[string]string{"cluster-id": "late-cluster-id"}
@@ -517,7 +558,7 @@ var _ = Describe("Lease Controller", func() {
 			// label is visible to cleanup instead of the stale pre-label copy.
 			_, err = reconciler.Reconcile(context.Background(), req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(reconciler.deleteTagsByClusterId(context.Background(), "refresh-lease")).To(Succeed(),
+			Expect(reconciler.deleteTagsByClusterId(context.Background(), "default/refresh-lease")).To(Succeed(),
 				"a late-added cluster-id must be visible in the cached snapshot")
 
 			// Deletion then takes the processable path: no error, lease evicted.
@@ -526,7 +567,7 @@ var _ = Describe("Lease Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			reconciler.leaseMu.Lock()
-			_, exists := reconciler.leases["refresh-lease"]
+			_, exists := reconciler.leases["default/refresh-lease"]
 			reconciler.leaseMu.Unlock()
 			Expect(exists).To(BeFalse())
 		})

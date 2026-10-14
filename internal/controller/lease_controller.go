@@ -55,6 +55,8 @@ type LeaseReconciler struct {
 
 	Protection utils.ProtectionConfig
 
+	// leases caches fulfilled lease snapshots, keyed by "namespace/name" so
+	// same-named leases in different namespaces do not collide.
 	leases  map[string]*v1.Lease
 	leaseMu sync.Mutex
 
@@ -80,6 +82,8 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	r.logger.WithName("leases").Info("starting reconciliation", "cached_leases_count", len(r.leases))
 
+	leaseKey := req.NamespacedName.String()
+
 	if err := r.Get(ctx, client.ObjectKey{Name: req.Name, Namespace: req.Namespace}, &reconciledLease); err != nil {
 		if err = client.IgnoreNotFound(err); err != nil {
 			r.logger.Error(err, "failed to get lease from API server")
@@ -90,7 +94,7 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 		// If lease was not found it was deleted, start clean up process
 		// make a copy of the lease, lock, delete the lease from cache, unlock, delete virtual machines if they exist
-		if l, err := r.getLeaseByName(req.Name); err != nil {
+		if l, err := r.getLease(leaseKey); err != nil {
 			r.logger.WithName("leases").Error(err, "lease not found in cache", "name", req.Name)
 		} else {
 
@@ -103,7 +107,7 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				r.logger.WithName("leases").Error(fmt.Errorf("lease %s has no usable cluster-id label", l.Name),
 					"cluster id not found in cached lease, evicting without vSphere cleanup", "name", l.Name)
 				r.leaseMu.Lock()
-				delete(r.leases, req.Name)
+				delete(r.leases, leaseKey)
 				r.leaseMu.Unlock()
 				return ctrl.Result{}, nil
 			}
@@ -111,34 +115,36 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			r.logger.WithName("leases").Info("lease found in cache, starting cleanup process", "name", l.Name, "creation_timestamp", l.CreationTimestamp.Format(time.RFC3339))
 
 			r.logger.WithName("leases").Info("getting managed entities by cluster id", "cluster_id", clusterId)
-			managedEntities, err := r.getManagedEntitiesByClusterId(ctx, l.Name)
+			managedEntities, err := r.getManagedEntitiesByClusterId(ctx, leaseKey)
 			if err != nil {
 				r.logger.Error(err, "failed to get ManagedEntitiesByClusterId", "lease_name", l.Name)
 			}
 
 			if len(managedEntities) != 0 {
 				r.logger.WithName("leases").Info("getting children of managed entities")
-				tempChildMe, err := r.childrenOfFolder(ctx, managedEntities, l.Name)
+				tempChildMe, err := r.childrenOfFolder(ctx, managedEntities)
 				if err != nil {
 					return ctrl.Result{}, err
 				}
 
-				managedEntities = append(managedEntities, tempChildMe...)
+				for server, childEntities := range tempChildMe {
+					managedEntities[server] = append(managedEntities[server], childEntities...)
+				}
 
 				r.logger.WithName("leases").Info("deleting managed entities")
-				if err := r.deleteByManagedEntity(ctx, managedEntities, l.Name); err != nil {
+				if err := r.deleteByManagedEntity(ctx, managedEntities); err != nil {
 					r.logger.Error(err, "failed to delete ManagedEntitiesByClusterId", "lease_name", l.Name)
 				}
 			}
 
 			r.logger.WithName("leases").Info("deleting tags by cluster id", "cluster_id", clusterId)
-			if err := r.deleteTagsByClusterId(ctx, l.Name); err != nil {
+			if err := r.deleteTagsByClusterId(ctx, leaseKey); err != nil {
 				r.logger.Error(err, "failed to cleanup leaked tags")
 				return ctrl.Result{}, err
 			}
 
 			r.leaseMu.Lock()
-			delete(r.leases, req.Name)
+			delete(r.leases, leaseKey)
 			r.leaseMu.Unlock()
 			r.logger.WithName("cleanup").Info("completed cleanup for deleted lease", "lease_name", l.Name)
 		}
@@ -151,11 +157,11 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		r.logger.WithName("leases").Info("processing fulfilled lease", "phase", reconciledLease.Status.Phase)
 
 		r.leaseMu.Lock()
-		_, wasCached := r.leases[reconciledLease.Name]
+		_, wasCached := r.leases[leaseKey]
 		// Refresh the snapshot on every reconcile so labels added after the lease
 		// was first cached (e.g. a late cluster-id) are visible to cleanup when
 		// the lease is eventually deleted.
-		r.leases[reconciledLease.Name] = &reconciledLease
+		r.leases[leaseKey] = &reconciledLease
 		if !wasCached {
 			r.logger.WithName("leases").Info("caching fulfilled lease for monitoring", "name", reconciledLease.Name, "creation_timestamp", reconciledLease.CreationTimestamp.Format(time.RFC3339))
 		}
@@ -166,7 +172,7 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			r.logger.WithName("monitoring").Info("starting leak detection for fulfilled lease", "lease_name", reconciledLease.Name)
 
 			// Is there _any_ *soap* based objects that exist in any vCenter based on the cluster id
-			managedEntities, err := r.getManagedEntitiesByClusterId(ctx, reconciledLease.Name)
+			managedEntities, err := r.getManagedEntitiesByClusterId(ctx, leaseKey)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -175,20 +181,14 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			case len(managedEntities) == 0:
 				// there are no cluster objects with that name, if there are any virtual machines running
 				// on the port group destroy them
-				if err := r.deleteVirtualMachinesByPortGroup(ctx, reconciledLease.Name); err != nil {
+				if err := r.deleteVirtualMachinesByPortGroup(ctx, leaseKey); err != nil {
 					return ctrl.Result{}, err
 				}
-				// I know below is not necessary, thinking about future changes
-				// where we know the types of managedentities with the cluster id
-				// and how we could better approach removing left over objects
-			case len(managedEntities) == 1:
-				for _, managedEntity := range managedEntities {
-					r.logger.Info("processing managed object", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
-				}
-
-			case len(managedEntities) > 1:
-				for _, managedEntity := range managedEntities {
-					r.logger.Info("processing managed object", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
+			default:
+				for _, serverEntities := range managedEntities {
+					for _, managedEntity := range serverEntities {
+						r.logger.Info("processing managed object", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
+					}
 				}
 			}
 		} else {
@@ -199,16 +199,16 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	return ctrl.Result{}, nil
 }
 
-// getLeaseByName retrieves a cached lease by name.
+// getLease retrieves a cached lease by its "namespace/name" key.
 // Returns error if lease is not found in the local cache.
-func (r *LeaseReconciler) getLeaseByName(name string) (*v1.Lease, error) {
+func (r *LeaseReconciler) getLease(leaseKey string) (*v1.Lease, error) {
 	r.leaseMu.Lock()
 	defer r.leaseMu.Unlock()
 
-	if lease, ok := r.leases[name]; ok {
+	if lease, ok := r.leases[leaseKey]; ok {
 		return lease, nil
 	}
-	return nil, fmt.Errorf("lease %s not found", name)
+	return nil, fmt.Errorf("lease %s not found", leaseKey)
 }
 
 // getFilteredVirtualMachines retrieves VMs excluding those belonging to the cluster.
@@ -282,12 +282,12 @@ func hasOrphanedDisks(vm mo.VirtualMachine) bool {
 // deleteVirtualMachinesByPortGroup removes VMs from lease port groups.
 // Only deletes VMs created before the lease to avoid removing cluster VMs.
 // Also identifies and deletes orphaned VMs with 0GB disks.
-func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, leaseName string) error {
+func (r *LeaseReconciler) deleteVirtualMachinesByPortGroup(ctx context.Context, leaseKey string) error {
 	var clusterId string
 	var ok bool
 	var containerViews []*view.ContainerView
 
-	l, err := r.getLeaseByName(leaseName)
+	l, err := r.getLease(leaseKey)
 	if err != nil {
 		return err
 	}
@@ -438,14 +438,36 @@ func (r *LeaseReconciler) deleteVirtualMachine(ctx context.Context, server strin
 	return nil
 }
 
+// leaseServers returns the distinct vCenter servers serving the lease's assigned
+// pools, falling back to the deprecated inline Status.Server for older leases
+// without PoolInfo.
+func leaseServers(l *v1.Lease) []string {
+	servers := make([]string, 0, len(l.Status.PoolInfo)+1)
+	seen := make(map[string]struct{}, len(l.Status.PoolInfo)+1)
+	for _, fd := range l.Status.PoolInfo {
+		if fd.Server == "" {
+			continue
+		}
+		if _, ok := seen[fd.Server]; ok {
+			continue
+		}
+		seen[fd.Server] = struct{}{}
+		servers = append(servers, fd.Server)
+	}
+	if len(servers) == 0 && l.Status.Server != "" {
+		servers = append(servers, l.Status.Server)
+	}
+	return servers
+}
+
 // getManagedEntitiesByClusterId finds vSphere objects by cluster ID.
-// Searches across all vCenter servers for entities matching cluster ID pattern.
-func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, leaseName string) ([]mo.ManagedEntity, error) {
+// Searches each vCenter server serving the lease's pools and returns the
+// entities matching the cluster ID pattern, grouped by server.
+func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, leaseKey string) (map[string][]mo.ManagedEntity, error) {
 	var clusterId string
 	var ok bool
-	var managedEntities []mo.ManagedEntity
 
-	l, err := r.getLeaseByName(leaseName)
+	l, err := r.getLease(leaseKey)
 	if err != nil {
 		return nil, err
 	}
@@ -454,23 +476,43 @@ func (r *LeaseReconciler) getManagedEntitiesByClusterId(ctx context.Context, lea
 		return nil, fmt.Errorf("cluster id %s not found in lease", clusterId)
 	}
 
-	v, err := r.Metadata.ContainerView(ctx, l.Status.Server)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := v.RetrieveWithFilter(ctx, []string{"ManagedEntity"}, nil, &managedEntities, property.Match{"name": fmt.Sprintf("%s*", clusterId)}); err != nil {
-		if strings.Contains(err.Error(), "object references is empty") {
-			return nil, nil
+	managedEntities := make(map[string][]mo.ManagedEntity)
+	totalCount := 0
+	var lastErr error
+	for _, server := range leaseServers(l) {
+		var entities []mo.ManagedEntity
+		v, err := r.Metadata.ContainerView(ctx, server)
+		if err != nil {
+			r.logger.Error(err, "failed to create container view, continuing to next vCenter", "vcenter", server)
+			lastErr = err
+			continue
 		}
-		return nil, err
+
+		if err := v.RetrieveWithFilter(ctx, []string{"ManagedEntity"}, nil, &entities, property.Match{"name": fmt.Sprintf("%s*", clusterId)}); err != nil {
+			if strings.Contains(err.Error(), "object references is empty") {
+				// no matches on this server
+				continue
+			}
+			r.logger.Error(err, "failed to retrieve managed entities, continuing to next vCenter", "vcenter", server)
+			lastErr = err
+			continue
+		}
+
+		if err := r.Metadata.DestroyContainerViews(ctx, []*view.ContainerView{v}); err != nil {
+			return nil, err
+		}
+
+		if len(entities) > 0 {
+			managedEntities[server] = entities
+			totalCount += len(entities)
+		}
 	}
 
-	if err := r.Metadata.DestroyContainerViews(ctx, []*view.ContainerView{v}); err != nil {
-		return nil, err
+	if lastErr != nil {
+		return managedEntities, fmt.Errorf("managed entity lookup completed with errors (last: %w)", lastErr)
 	}
 
-	r.logger.Info("managed entities", "cluster-id", clusterId, "count", len(managedEntities))
+	r.logger.Info("managed entities", "cluster-id", clusterId, "count", totalCount)
 
 	return managedEntities, nil
 }
@@ -503,101 +545,113 @@ func toManagedObjectRefs(objs []object.Reference) []types.ManagedObjectReference
 }
 
 // childrenOfFolder retrieves child objects from folder entities.
-// Recursively finds all objects within cluster folders.
-func (r *LeaseReconciler) childrenOfFolder(ctx context.Context, managedEntities []mo.ManagedEntity, leaseName string) ([]mo.ManagedEntity, error) {
-	l, err := r.getLeaseByName(leaseName)
-	if err != nil {
-		return nil, err
-	}
-
-	var toReturnMe []mo.ManagedEntity
-	s, err := r.Metadata.Session(ctx, l.Status.Server)
-	if err != nil {
-		return nil, err
-	}
-	pc := property.DefaultCollector(s.Client.Client)
-	defer pc.Destroy(ctx)
-
-	for _, managedEntity := range managedEntities {
-		if managedEntity.Reference().Type == "Folder" {
-			var tempChildMe []mo.ManagedEntity
-
-			folder := object.NewFolder(s.Client.Client, managedEntity.Reference())
-			children, err := folder.Children(ctx)
-			if err != nil {
-				return nil, err
-			}
-			childRefs := toManagedObjectRefs(children)
-
-			if err := pc.Retrieve(ctx, childRefs, nil, &tempChildMe); err != nil {
-				if strings.Contains(err.Error(), "object references is empty") {
-					return nil, nil
-				}
-				return nil, err
-			}
-			toReturnMe = append(toReturnMe, tempChildMe...)
+// Recursively finds all objects within cluster folders, keeping results
+// grouped by the server the folders were found on.
+func (r *LeaseReconciler) childrenOfFolder(ctx context.Context, managedEntities map[string][]mo.ManagedEntity) (map[string][]mo.ManagedEntity, error) {
+	toReturnMe := make(map[string][]mo.ManagedEntity)
+	var lastErr error
+	for server, serverEntities := range managedEntities {
+		s, err := r.Metadata.Session(ctx, server)
+		if err != nil {
+			r.logger.Error(err, "failed to establish session, continuing to next vCenter", "vcenter", server)
+			lastErr = err
+			continue
 		}
+		pc := property.DefaultCollector(s.Client.Client)
+
+		for _, managedEntity := range serverEntities {
+			if managedEntity.Reference().Type == "Folder" {
+				var tempChildMe []mo.ManagedEntity
+
+				folder := object.NewFolder(s.Client.Client, managedEntity.Reference())
+				children, err := folder.Children(ctx)
+				if err != nil {
+					pc.Destroy(ctx)
+					return nil, err
+				}
+				childRefs := toManagedObjectRefs(children)
+
+				if err := pc.Retrieve(ctx, childRefs, nil, &tempChildMe); err != nil {
+					if strings.Contains(err.Error(), "object references is empty") {
+						// no children for this folder
+						continue
+					}
+					pc.Destroy(ctx)
+					return nil, err
+				}
+				toReturnMe[server] = append(toReturnMe[server], tempChildMe...)
+			}
+		}
+		pc.Destroy(ctx)
+	}
+
+	if lastErr != nil {
+		return toReturnMe, fmt.Errorf("child entity lookup completed with errors (last: %w)", lastErr)
 	}
 	return toReturnMe, nil
 }
 
 // deleteByManagedEntity destroys vSphere managed entities.
-// Removes folders, VMs, and other cluster-related objects.
-func (r *LeaseReconciler) deleteByManagedEntity(ctx context.Context, managedEntities []mo.ManagedEntity, leaseName string) error {
-	l, err := r.getLeaseByName(leaseName)
-	if err != nil {
-		return err
-	}
+// Removes folders, VMs, and other cluster-related objects, using the server
+// each entity was found on so multi-vCenter leases clean up everywhere.
+func (r *LeaseReconciler) deleteByManagedEntity(ctx context.Context, managedEntities map[string][]mo.ManagedEntity) error {
+	var lastErr error
+	for server, serverEntities := range managedEntities {
+		s, err := r.Metadata.Session(ctx, server)
+		if err != nil {
+			r.logger.Error(err, "failed to establish session, continuing to next vCenter", "vcenter", server)
+			lastErr = err
+			continue
+		}
 
-	s, err := r.Metadata.Session(ctx, l.Status.Server)
-	if err != nil {
-		return err
-	}
+		foldersManagedEntities := make(map[string]mo.ManagedEntity)
+		virtualMachines := make(map[string]struct{})
 
-	foldersManagedEntities := make(map[string]mo.ManagedEntity)
-	virtualMachines := make(map[string]struct{})
-
-	for _, managedEntity := range managedEntities {
-		r.logger.WithName("deleteByManagedEntity").Info("deleting managed entity", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
-		switch managedEntity.Reference().Type {
-		case "Folder":
-			if _, ok := foldersManagedEntities[managedEntity.Reference().Value]; !ok {
-				foldersManagedEntities[managedEntity.Reference().Value] = managedEntity
-			}
-		case "VirtualMachine":
-			// only delete the virtual machine once
-			if _, ok := virtualMachines[managedEntity.Reference().Value]; !ok {
-				virtualMachines[managedEntity.Reference().Value] = struct{}{}
-				if err := r.deleteVirtualMachine(ctx, l.Status.Server, managedEntity.Reference()); err != nil {
-					r.logger.Error(err, "failed to delete managed entity", "entity", managedEntity.Name)
+		for _, managedEntity := range serverEntities {
+			r.logger.WithName("deleteByManagedEntity").Info("deleting managed entity", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
+			switch managedEntity.Reference().Type {
+			case "Folder":
+				if _, ok := foldersManagedEntities[managedEntity.Reference().Value]; !ok {
+					foldersManagedEntities[managedEntity.Reference().Value] = managedEntity
+				}
+			case "VirtualMachine":
+				// only delete the virtual machine once
+				if _, ok := virtualMachines[managedEntity.Reference().Value]; !ok {
+					virtualMachines[managedEntity.Reference().Value] = struct{}{}
+					if err := r.deleteVirtualMachine(ctx, server, managedEntity.Reference()); err != nil {
+						r.logger.Error(err, "failed to delete managed entity", "entity", managedEntity.Name)
+						continue
+					}
+				}
+			case "ResourcePool":
+				if IsProtectedResourcePool(managedEntity.Name, r.Protection.ResourcePools) {
+					r.logger.WithName("deleteByManagedEntity").Info("skipping protected resource pool", "name", managedEntity.Name)
+					continue
+				}
+				if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {
+					r.logger.Error(err, "failed to destroy resource pool", "entity", managedEntity.Name)
+					continue
+				}
+			default:
+				if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {
+					r.logger.Error(err, "failed to destroy managed entity", "entity", managedEntity.Name, "type", managedEntity.Reference().Type)
 					continue
 				}
 			}
-		case "ResourcePool":
-			if IsProtectedResourcePool(managedEntity.Name, r.Protection.ResourcePools) {
-				r.logger.WithName("deleteByManagedEntity").Info("skipping protected resource pool", "name", managedEntity.Name)
-				continue
-			}
+		}
+
+		// After the virtual machines are deleted, now delete the folder(s)
+		for _, managedEntity := range foldersManagedEntities {
 			if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {
-				r.logger.Error(err, "failed to destroy resource pool", "entity", managedEntity.Name)
-				continue
-			}
-		default:
-			if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {
-				r.logger.Error(err, "failed to destroy managed entity", "entity", managedEntity.Name, "type", managedEntity.Reference().Type)
+				r.logger.Error(err, "failed to destroy managed entity", "entity", managedEntity.Name)
 				continue
 			}
 		}
 	}
 
-	// After the virtual machines are deleted, now delete the folder(s)
-	for _, managedEntity := range foldersManagedEntities {
-		if err := deleteManagedEntity(ctx, managedEntity, s.Client.Client); err != nil {
-			r.logger.Error(err, "failed to destroy managed entity", "entity", managedEntity.Name)
-			continue
-		}
+	if lastErr != nil {
+		return fmt.Errorf("managed entity deletion completed with errors (last: %w)", lastErr)
 	}
-
 	return nil
 }
 func deleteManagedEntity(ctx context.Context, managedEntity mo.ManagedEntity, c *vim25.Client) error {
@@ -615,10 +669,10 @@ func deleteManagedEntity(ctx context.Context, managedEntity mo.ManagedEntity, c 
 
 // deleteTagsByClusterId removes vSphere tags associated with cluster.
 // Cleans up tag categories containing cluster ID across all vCenters.
-func (r *LeaseReconciler) deleteTagsByClusterId(ctx context.Context, leaseName string) error {
+func (r *LeaseReconciler) deleteTagsByClusterId(ctx context.Context, leaseKey string) error {
 	var clusterId string
 	var ok bool
-	lease, err := r.getLeaseByName(leaseName)
+	lease, err := r.getLease(leaseKey)
 	if err != nil {
 		return err
 	}
