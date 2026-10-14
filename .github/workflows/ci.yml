@@ -52,7 +52,7 @@ jobs:
       - name: Set up envtest assets
         run: |
           go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2
-          echo "KUBEBUILDER_ASSETS=$($(go env GOPATH)/bin/setup-envtest use 1.28.3 --bin-dir ${RUNNER_TEMP}/envtest -p path)" >> "$GITHUB_ENV"
+          echo "KUBEBUILDER_ASSETS=$("$(go env GOPATH)/bin/setup-envtest" use 1.28.3 --bin-dir "${RUNNER_TEMP}/envtest" -p path)" >> "$GITHUB_ENV"
 
       - name: Run tests
         run: go list ./... | grep -v /e2e | xargs -r go test -race -coverpkg=./... -coverprofile=cover.out -covermode=atomic
