@@ -44,7 +44,7 @@ jobs:
       - name: Generate CRDs
         run: |
           go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0
-          $(go env GOPATH)/bin/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+          $(go env GOPATH)/bin/controller-gen rbac:roleName=manager-role crd webhook paths="./..." paths="github.com/openshift-splat-team/vsphere-capacity-manager/pkg/apis/vspherecapacitymanager.splat.io/v1" output:crd:artifacts:config=config/crd/bases
           ls -la config/crd/bases/
 
       # envtest provides etcd and a kube-apiserver, vcsim (govmomi
