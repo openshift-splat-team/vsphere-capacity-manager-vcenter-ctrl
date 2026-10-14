@@ -13,7 +13,7 @@ require (
 	github.com/go-logr/zapr v1.3.0
 	github.com/onsi/ginkgo/v2 v2.20.0
 	github.com/onsi/gomega v1.34.1
-	github.com/openshift-splat-team/vsphere-capacity-manager v0.0.0-20240703131451-86a0a5d5e198
+	github.com/openshift-splat-team/vsphere-capacity-manager v0.0.0-20261013110629-c328d260a72e
 	github.com/openshift/api v0.0.0-20240502183942-42506f3fcd01
 	github.com/vmware/govmomi v0.52.0
 	go.uber.org/zap v1.27.0

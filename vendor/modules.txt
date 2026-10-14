@@ -140,7 +140,7 @@ github.com/onsi/gomega/matchers/support/goraph/edge
 github.com/onsi/gomega/matchers/support/goraph/node
 github.com/onsi/gomega/matchers/support/goraph/util
 github.com/onsi/gomega/types
-# github.com/openshift-splat-team/vsphere-capacity-manager v0.0.0-20240703131451-86a0a5d5e198
+# github.com/openshift-splat-team/vsphere-capacity-manager v0.0.0-20261013110629-c328d260a72e
 ## explicit; go 1.22.0
 github.com/openshift-splat-team/vsphere-capacity-manager/pkg/apis/vspherecapacitymanager.splat.io/v1
 # github.com/openshift/api v0.0.0-20240502183942-42506f3fcd01

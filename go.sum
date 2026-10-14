@@ -80,8 +80,8 @@ github.com/onsi/ginkgo/v2 v2.20.0 h1:PE84V2mHqoT1sglvHc8ZdQtPcwmvvt29WLEEO3xmdZw
 github.com/onsi/ginkgo/v2 v2.20.0/go.mod h1:lG9ey2Z29hR41WMVthyJBGUBcBhGOtoPF2VFMvBXFCI=
 github.com/onsi/gomega v1.34.1 h1:EUMJIKUjM8sKjYbtxQI9A4z2o+rruxnzNvpknOXie6k=
 github.com/onsi/gomega v1.34.1/go.mod h1:kU1QgUvBDLXBJq618Xvm2LUX6rSAfRaFRTcdOeDLwwY=
-github.com/openshift-splat-team/vsphere-capacity-manager v0.0.0-20240703131451-86a0a5d5e198 h1:KIc96IxwTpp7rUD2Uec1vX7ili7iKGyiBfcAqsxZXeI=
-github.com/openshift-splat-team/vsphere-capacity-manager v0.0.0-20240703131451-86a0a5d5e198/go.mod h1:CPIfgNIv+OgUa9yith8XrOKy6PkAXomU2PXbPXFBlMU=
+github.com/openshift-splat-team/vsphere-capacity-manager v0.0.0-20261013110629-c328d260a72e h1:kSw22a2vn1tVjp1QtwRBHg6GJqzmaeWRrFrzinTDuu4=
+github.com/openshift-splat-team/vsphere-capacity-manager v0.0.0-20261013110629-c328d260a72e/go.mod h1:ZduYDGQUoRafxEZgN5MrMsE0Ne4FtMgXV3d8fnrfV/0=
 github.com/openshift/api v0.0.0-20240502183942-42506f3fcd01 h1:qStvZckKR5QT0qOdYsqNHFWdUrJDUL8b3BLAGS/CGPo=
 github.com/openshift/api v0.0.0-20240502183942-42506f3fcd01/go.mod h1:CxgbWAlvu2iQB0UmKTtRu1YfepRg1/vJ64n2DlIEVz4=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
