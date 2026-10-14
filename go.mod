@@ -1,8 +1,6 @@
 module github.com/openshift-splat-team/vsphere-capacity-manager-vcenter-ctrl
 
-go 1.23.0
-
-toolchain go1.24.7
+go 1.26.0
 
 replace sigs.k8s.io/cluster-api => sigs.k8s.io/cluster-api v1.8.2
 
