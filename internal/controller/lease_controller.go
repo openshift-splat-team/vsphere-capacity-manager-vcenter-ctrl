@@ -169,25 +169,32 @@ func (r *LeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 		// only check for leaking once, when the lease is newly cached
 		if !wasCached {
-			r.logger.WithName("monitoring").Info("starting leak detection for fulfilled lease", "lease_name", reconciledLease.Name)
+			// Leak detection is cluster-id based; a fulfilled lease without a
+			// usable cluster-id (e.g. a user lease) has nothing to detect. Skip it
+			// like the deletion path instead of erroring on every restart.
+			if clusterId, ok := reconciledLease.Labels["cluster-id"]; !ok || clusterId == "" {
+				r.logger.WithName("monitoring").Info("skipping leak detection, lease has no usable cluster-id", "lease_name", reconciledLease.Name)
+			} else {
+				r.logger.WithName("monitoring").Info("starting leak detection for fulfilled lease", "lease_name", reconciledLease.Name)
 
-			// Is there _any_ *soap* based objects that exist in any vCenter based on the cluster id
-			managedEntities, err := r.getManagedEntitiesByClusterId(ctx, leaseKey)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			switch {
-			case len(managedEntities) == 0:
-				// there are no cluster objects with that name, if there are any virtual machines running
-				// on the port group destroy them
-				if err := r.deleteVirtualMachinesByPortGroup(ctx, leaseKey); err != nil {
+				// Is there _any_ *soap* based objects that exist in any vCenter based on the cluster id
+				managedEntities, err := r.getManagedEntitiesByClusterId(ctx, leaseKey)
+				if err != nil {
 					return ctrl.Result{}, err
 				}
-			default:
-				for _, serverEntities := range managedEntities {
-					for _, managedEntity := range serverEntities {
-						r.logger.Info("processing managed object", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
+
+				switch {
+				case len(managedEntities) == 0:
+					// there are no cluster objects with that name, if there are any virtual machines running
+					// on the port group destroy them
+					if err := r.deleteVirtualMachinesByPortGroup(ctx, leaseKey); err != nil {
+						return ctrl.Result{}, err
+					}
+				default:
+					for _, serverEntities := range managedEntities {
+						for _, managedEntity := range serverEntities {
+							r.logger.Info("processing managed object", "name", managedEntity.Name, "type", managedEntity.Reference().Type)
+						}
 					}
 				}
 			}
