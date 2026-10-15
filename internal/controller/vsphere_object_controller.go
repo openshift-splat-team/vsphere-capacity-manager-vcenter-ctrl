@@ -382,7 +382,13 @@ func (v *VSphereObjectReconciler) tag(ctx context.Context) error {
 				continue
 			}
 
-			attachmentCount := len(attached)
+			attachmentCount := 0
+			// one AttachedObjects entry is returned per requested tag id, even
+			// when the tag has no attachments: count the attached objects
+			// themselves, not the entries
+			for _, entry := range attached {
+				attachmentCount += len(entry.ObjectIDs)
+			}
 			v.logger.WithName("tag").Info("tag attachment count", "name", t.Name, "count", attachmentCount)
 
 			// Only delete tags with ZERO attachments

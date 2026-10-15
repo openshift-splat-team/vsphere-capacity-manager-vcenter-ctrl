@@ -85,6 +85,10 @@ type NetworkSpec struct {
 	// PrimaryRouterHostname hostname of the primary router.
 	// +optional
 	PrimaryRouterHostname string `json:"primaryRouterHostname"`
+
+	// Nameservers an array of the nameservers to use
+	// +optional
+	Nameservers []string `json:"nameservers"`
 }
 
 // NetworkStatus defines the status for a pool

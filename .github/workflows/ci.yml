@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Pin Go toolchain
+        run: echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l cmd internal pkg)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # Unit + integration tests need the CRDs in config/crd/bases for
+      # envtest; they are generated, not tracked in git.
+      - name: Generate CRDs
+        run: |
+          go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0
+          "$(go env GOPATH)/bin/controller-gen" rbac:roleName=manager-role crd webhook paths="./..." paths="github.com/openshift-splat-team/vsphere-capacity-manager/pkg/apis/vspherecapacitymanager.splat.io/v1" output:crd:artifacts:config=config/crd/bases
+          ls -la config/crd/bases/
+
+      # envtest provides etcd and a kube-apiserver, vcsim (govmomi
+      # simulator) provides the vCenter endpoints in-process.
+      - name: Set up envtest assets
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2
+          echo "KUBEBUILDER_ASSETS=$("$(go env GOPATH)/bin/setup-envtest" use 1.28.3 --bin-dir "${RUNNER_TEMP}/envtest" -p path)" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        run: go list ./... | grep -v /e2e | xargs -r go test -race -coverpkg=./... -coverprofile=cover.out -covermode=atomic
+
+      - name: Coverage summary
+        run: |
+          echo "## Total coverage" 
+          go tool cover -func cover.out | tail -1
+          echo "## Functions below 100%"
+          go tool cover -func cover.out | grep -vE '100.0%$' || true
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: cover.out
+          if-no-files-found: error

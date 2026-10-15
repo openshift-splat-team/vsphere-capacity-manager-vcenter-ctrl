@@ -52,9 +52,14 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	By("bootstrapping test environment")
+	crdDir := filepath.Join("..", "..", "config", "crd", "bases")
+	crds, err := filepath.Glob(filepath.Join(crdDir, "*.yaml"))
+	Expect(err).NotTo(HaveOccurred())
+	Expect(crds).NotTo(BeEmpty(), "no CRDs found in %s; run 'make manifests' first", crdDir)
+
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: false,
+		CRDDirectoryPaths:     []string{crdDir},
+		ErrorIfCRDPathMissing: true,
 
 		// The BinaryAssetsDirectory is only required if you want to run the tests directly
 		// without call the makefile target test. If not informed it will look for the
@@ -65,7 +70,6 @@ var _ = BeforeSuite(func() {
 			fmt.Sprintf("1.28.3-%s-%s", runtime.GOOS, runtime.GOARCH)),
 	}
 
-	var err error
 	// cfg is defined in this file globally.
 	cfg, err = testEnv.Start()
 	Expect(err).NotTo(HaveOccurred())
