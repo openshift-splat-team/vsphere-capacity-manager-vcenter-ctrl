@@ -545,9 +545,9 @@ var _ = Describe("Lease Controller", func() {
 			req := ctrl.Request{NamespacedName: k8stypes.NamespacedName{Name: "refresh-lease", Namespace: "default"}}
 
 			// First reconcile caches the fulfilled lease without a cluster-id;
-			// its leak check fails once (the retry goes quiet once cached).
+			// leak detection is skipped for such leases instead of erroring.
 			_, err := reconciler.Reconcile(context.Background(), req)
-			Expect(err).To(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
 			Expect(reconciler.deleteTagsByClusterId(context.Background(), "default/refresh-lease")).To(HaveOccurred())
 
 			// The creator adds the cluster-id label after fulfillment.
@@ -570,6 +570,68 @@ var _ = Describe("Lease Controller", func() {
 			_, exists := reconciler.leases["default/refresh-lease"]
 			reconciler.leaseMu.Unlock()
 			Expect(exists).To(BeFalse())
+		})
+	})
+
+	Context("Leak detection for leases without a usable cluster-id", func() {
+		reconcileLabellessLease := func(name string, labels map[string]string) ctrl.Request {
+			reconciler.Client = k8sClient
+			reconciler.logger = logr.Discard()
+
+			// These fields are required by the Lease CRD schema.
+			fulfilledStatus := v1.LeaseStatus{
+				Phase: v1.PHASE_FULFILLED,
+				FailureDomainSpec: v1.FailureDomainSpec{
+					VSpherePlatformFailureDomainSpec: configv1.VSpherePlatformFailureDomainSpec{
+						Name:   "fd1",
+						Region: "us-east",
+						Zone:   "us-east-1",
+						Server: "vcenter.example.com",
+						Topology: configv1.VSpherePlatformTopology{
+							ComputeCluster: "/c1/host/cluster1",
+							Datastore:      "/c1/datastore/ds1",
+							Networks:       []string{"network-1"},
+						},
+					},
+				},
+			}
+			lease := &v1.Lease{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Labels: labels},
+				Status:     fulfilledStatus,
+			}
+			Expect(k8sClient.Create(context.Background(), lease)).To(Succeed())
+			// Create's response strips status (it is a subresource); re-apply it.
+			lease.Status = fulfilledStatus
+			Expect(k8sClient.Status().Update(context.Background(), lease)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(context.Background(), lease) })
+
+			return ctrl.Request{NamespacedName: k8stypes.NamespacedName{Name: name, Namespace: "default"}}
+		}
+
+		It("should skip leak detection instead of erroring when a fulfilled lease has no cluster-id", func() {
+			req := reconcileLabellessLease("user-lease-no-cluster-id", nil)
+
+			// First reconcile caches the lease and must skip leak detection
+			// cleanly: this is the controller-restart path that used to log a
+			// reconciler error per label-less lease.
+			_, err := reconciler.Reconcile(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+
+			reconciler.leaseMu.Lock()
+			_, cached := reconciler.leases["default/user-lease-no-cluster-id"]
+			reconciler.leaseMu.Unlock()
+			Expect(cached).To(BeTrue(), "a fulfilled lease without cluster-id stays cached so deletion can evict it")
+
+			// The reconcile that used to be the error retry is quiet as well.
+			_, err = reconciler.Reconcile(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should treat an empty cluster-id label as unusable for leak detection", func() {
+			req := reconcileLabellessLease("user-lease-empty-cluster-id", map[string]string{"cluster-id": ""})
+
+			_, err := reconciler.Reconcile(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 
